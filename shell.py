@@ -301,9 +301,21 @@ def _missing_args(tool, given):
     return [k for k in required if given.get(k) in (None, "")]
 
 
-def to_openai(system, messages):
-    """Anthropic-shaped transcript → OpenAI chat messages. Thinking blocks are
-    dropped (OpenAI has no place to put them); tool calls become tool_calls."""
+# Endpoints that refuse an assistant message carrying reasoning_content. Found by
+# asking, not by guessing: the field is sent, and if the server rejects it the
+# request is retried without it and the endpoint is remembered.
+NO_REASONING_ECHO = set()
+
+
+def to_openai(system, messages, echo_reasoning=True):
+    """Anthropic-shaped transcript → OpenAI chat messages.
+
+    The reasoning goes back with the assistant turn as `reasoning_content`. Dropping
+    it is the default in this wire, and it means the model re-derives its plan from
+    its own tool calls at every step: it cannot see what it was thinking when it made
+    them. Servers that reject the field are remembered in NO_REASONING_ECHO and get
+    the plain shape.
+    """
     out = [{"role": "system", "content": system}] if system else []
     for m in messages:
         role, content = m.get("role"), m.get("content")
@@ -311,15 +323,19 @@ def to_openai(system, messages):
             out.append({"role": role, "content": content})
             continue
         if role == "assistant":
-            text, calls = "", []
+            text, calls, thinking = "", [], ""
             for b in content or []:
                 if b.get("type") == "text":
                     text += b.get("text", "")
+                elif b.get("type") == "thinking":
+                    thinking += b.get("thinking", "")
                 elif b.get("type") == "tool_use":
                     calls.append({"id": b.get("id"), "type": "function",
                                   "function": {"name": b.get("name"),
                                                "arguments": json.dumps(b.get("input") or {})}})
             msg = {"role": "assistant", "content": text}
+            if thinking and echo_reasoning:
+                msg["reasoning_content"] = thinking
             if calls:
                 msg["tool_calls"] = calls
             out.append(msg)
@@ -489,12 +505,35 @@ def _stream(*, transcript, system, tools, api, budget, emit):
     }
 
 
+def _rejects_reasoning(detail):
+    d = (detail or "").lower()
+    return any(w in d for w in ("reasoning_content", "reasoning", "unrecognized",
+                                "unknown field", "additional propert", "unexpected"))
+
+
 def _stream_openai(*, transcript, system, tools, api, budget, emit):
     """The OpenAI chat wire. Reasoning arrives as `reasoning_content` deltas and
     tool calls arrive fragmented across chunks, so both must be accumulated."""
+    endpoint = api["base_url"].rstrip("/")
+    echo = endpoint not in NO_REASONING_ECHO
+    try:
+        return _openai_request(transcript=transcript, system=system, tools=tools, api=api,
+                               budget=budget, emit=emit, echo_reasoning=echo)
+    except APIError as exc:
+        if not (echo and exc.status == 400 and _rejects_reasoning(exc.detail)):
+            raise
+        # this server will not take the reasoning back. Remember, and carry on
+        # without it rather than failing the turn.
+        NO_REASONING_ECHO.add(endpoint)
+        log.write("request", f"openai {endpoint} rejects reasoning echo, dropping it")
+        return _openai_request(transcript=transcript, system=system, tools=tools, api=api,
+                               budget=budget, emit=emit, echo_reasoning=False)
+
+
+def _openai_request(*, transcript, system, tools, api, budget, emit, echo_reasoning):
     body = {
         "model": api["model"],
-        "messages": to_openai(system, transcript),
+        "messages": to_openai(system, transcript, echo_reasoning=echo_reasoning),
         "stream": True,
         "stream_options": {"include_usage": True},
         "max_tokens": api["max_tokens"],

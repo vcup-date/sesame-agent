@@ -1044,6 +1044,60 @@ check("the headless printer answers the whole protocol",
           ("on_raw", "on_thinking", "on_text", "on_tool_call", "on_tool_result",
            "confirm", "on_status", "on_error", "stop_requested")))
 
+# 10h. the reasoning goes back to the model on the OpenAI wire too. It used to be
+#      dropped there, which is the wire every local model and most providers use:
+#      the model saw its own tool calls but not the thinking that produced them.
+_conv = [
+    {"role": "user", "content": "fix it"},
+    {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "the discount multiplies instead of subtracting"},
+        {"type": "text", "text": "reading the file"},
+        {"type": "tool_use", "id": "t1", "name": "read", "input": {"path": "cart.py"}},
+    ]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "code"}]},
+]
+_sent = [m for m in _shell.to_openai("sys", _conv) if m["role"] == "assistant"][0]
+check("the openai wire carries the reasoning back",
+      _sent.get("reasoning_content") == "the discount multiplies instead of subtracting")
+check("and still carries the text and the tool call",
+      _sent["content"] == "reading the file" and _sent["tool_calls"][0]["function"]["name"] == "read")
+_plain = [m for m in _shell.to_openai("sys", _conv, echo_reasoning=False)
+          if m["role"] == "assistant"][0]
+check("a server that refuses it gets the plain shape", "reasoning_content" not in _plain)
+
+check("a 400 about the field is recognised",
+      _shell._rejects_reasoning('{"error":{"message":"Unrecognized key reasoning_content"}}'))
+check("an unrelated 400 is not", not _shell._rejects_reasoning("model not found"))
+
+# and the fallback actually happens: reject it once, and the turn still goes through
+_calls = []
+_real_req = _shell._openai_request
+
+
+def _fake_request(**kw):
+    _calls.append(kw["echo_reasoning"])
+    if kw["echo_reasoning"]:
+        raise _shell.APIError(400, "Unrecognized request argument: reasoning_content")
+    return {"id": "x", "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn", "usage": {}, "truncated": []}
+
+
+_shell._openai_request = _fake_request
+_shell.NO_REASONING_ECHO.clear()
+try:
+    _res = _shell._stream_openai(transcript=_conv, system="s", tools=None,
+                                 api={"base_url": "https://picky.example/v1", "model": "m",
+                                      "api_key": "k", "max_tokens": 10},
+                                 budget={}, emit=lambda e: None)
+finally:
+    _shell._openai_request = _real_req
+
+check("a server that rejects the reasoning does not fail the turn",
+      _calls == [True, False] and _res["content"][0]["text"] == "ok")
+check("and it is remembered, so the next turn does not try again",
+      "https://picky.example/v1" in _shell.NO_REASONING_ECHO)
+_shell.NO_REASONING_ECHO.clear()
+
 # 11. a keyless local endpoint is a valid setup: run.sh must not force setup on it
 import config as _config                          # noqa: E402
 

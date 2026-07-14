@@ -4,23 +4,33 @@ sesame agent is an agent you can put to work. Give it a task in your terminal or
 your browser and it goes and does it: reads and edits your files, runs commands,
 searches the web, drives a real browser, and shows you its thinking as it goes.
 
-## Why another agent
+## It does not forget what it was thinking
 
-**It runs on any model, including yours.** A hosted API, or a model on your own
-machine with no key, where nothing leaves the room. Switching between them is one
-keystroke, and a local model is treated as a real one: it asks your server how big
-its context window is instead of assuming.
+An agent thinks, calls a tool, reads the result, and thinks again. Between those
+steps its reasoning is usually thrown away: the model gets its own tool calls back,
+but not the thinking that produced them. So at every step it reconstructs why it was
+doing this, from the evidence, like walking into a room and having to work out what
+you came in for.
 
-**It keeps its train of thought.** What it worked out in the first step is still
-with it in the ninth, so it does not rebuild its plan from scratch after every
-command, and it does not forget why it started.
+sesame agent hands the reasoning back with the next request, on both wires, so the
+model is still holding what it worked out.
 
-**It will not wreck anything quietly.** It stops and asks before the things you
-cannot take back, and everything else can be undone: every file is copied before it
-is touched.
+You can watch the difference. The model picks a number inside its reasoning, never
+says it out loud, calls a tool, and is then asked what the number was. It cannot
+work it out again, so either it can see its earlier thinking or it is guessing:
 
-**It is small enough to own.** 5.4k lines of Python and one dependency. When it does
-something you do not like, you can find the line and change it.
+```bash
+python3 test/reasoning.py 5
+```
+
+```
+reasoning carried back:      recalled its own reasoning 5/5
+reasoning dropped:           recalled its own reasoning 1/5   (one lucky guess)
+```
+
+That is the whole idea. Everything else here (undo, permissions that only stop what
+you cannot take back, sessions, memory, a sub agent, a browser, a terminal and a web
+interface on the same core) exists to make it a thing you can actually work with.
 
 **Using a coding agent?** Give it [SETUP.md](SETUP.md) and it will install,
 configure and launch this for you:
@@ -67,19 +77,12 @@ served from cache, instead of a spinner.
 Pure Python. One required dependency. 20 files, 5.4k lines. Startup is about
 70ms and it holds around 45MB.
 
-`shell.py` is the engine. It owns the wire, retries, the safety gate and the
-token ceiling. It does not plan, does not decide what to do next, and does not
-know what task it is running. The model does that.
-
-## Reasoning across tool calls
-
-Most harnesses send a request, take a tool call, run it, append the result, and
-send again. The model's thinking is dropped at each boundary, so it re-derives
-its plan from its own tool calls at every step.
-
-sesame agent sends the reasoning back with each step, verbatim: the
-interleaved-thinking beta on the Anthropic wire, `reasoning_content` on the
-OpenAI one. The model keeps what it worked out earlier.
+`shell.py` is the engine. It owns the wire, retries, the safety gate and the token
+ceiling. It does not plan, does not decide what to do next, and does not know what
+task it is running. The model does that, and it keeps its reasoning while it does:
+thinking blocks go back verbatim with every request, with the interleaved-thinking
+beta on the Anthropic wire and `reasoning_content` on the OpenAI one. A server that
+refuses the field is remembered, and gets the plain shape instead.
 
 ## Web and browser
 
