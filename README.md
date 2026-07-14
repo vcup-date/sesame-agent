@@ -1,29 +1,26 @@
 # sesame agent
 
-A lightweight, fast agent that runs in your terminal and in your browser. It reads
-and edits files, runs shell commands, searches the web, drives a real browser, and
-shows its reasoning while it works.
+sesame agent is an agent you can put to work. Give it a task in your terminal or
+your browser and it goes and does it: reads and edits your files, runs commands,
+searches the web, drives a real browser, and shows you its thinking as it goes.
 
-## Why this exists
+## Why another agent
 
-A reasoning model already plans. It works out what to look at next, when it has
-enough, and when it is done, inside its own reasoning. This is built on the idea
-that the harness should then stay out of the way.
+**It runs on any model, including yours.** A hosted API, or a model on your own
+machine with no key, where nothing leaves the room. Switching between them is one
+keystroke, and a local model is treated as a real one: it asks your server how big
+its context window is instead of assuming.
 
-`shell.py` is the engine, and it is 606 lines. It forwards tool calls out and
-results back, retries the network, stops at anything dangerous, and holds a ceiling
-on tokens and tool calls. It has no planner, no scripted loop, no guidance injected
-per model family, and nothing running in the background between turns that rewrites
-your prompt or your files. The model decides what happens next.
+**It keeps its train of thought.** What it worked out in the first step is still
+with it in the ninth, so it does not rebuild its plan from scratch after every
+command, and it does not forget why it started.
 
-The one thing it insists on is that reasoning survives the tool boundary. Thinking
-blocks go back to the model verbatim with the next request, so what it worked out at
-the start is still in front of it nine tool calls later, rather than being rebuilt
-from its own tool history.
+**It will not wreck anything quietly.** It stops and asks before the things you
+cannot take back, and everything else can be undone: every file is copied before it
+is touched.
 
-What a daily driver needs and a thin loop usually leaves out (undo, permissions,
-sessions, context management, memory, a sub agent) lives outside the loop instead of
-inside it. 5.4k lines, 20 files, one required dependency.
+**It is small enough to own.** 5.4k lines of Python and one dependency. When it does
+something you do not like, you can find the line and change it.
 
 **Using a coding agent?** Give it [SETUP.md](SETUP.md) and it will install,
 configure and launch this for you:
