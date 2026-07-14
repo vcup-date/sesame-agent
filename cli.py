@@ -874,6 +874,17 @@ class Printer(Listener):
 
 RESTART = "\x00restart"        # sentinel: redraw the prompt at a new height
 
+PASTE = re.compile(r"\[paste #(\d+) · (\d+) lines[^\]]*\]")
+PASTE_MIN_LINES = 3          # 1 or 2 lines is just typing; more is an attachment
+
+
+def paste_label(pid, text):
+    lines = text.count("\n") + 1
+    first = next((l.strip() for l in text.splitlines() if l.strip()), "")
+    preview = first[:32] + ("…" if len(first) > 32 else "")
+    return f"[paste #{pid} · {lines} lines · {preview}]"
+
+
 COMMANDS = ["/help", "/model", "/provider", "/tools", "/undo", "/compact", "/effort", "/think",
             "/save", "/resume", "/sessions", "/memory", "/permissions", "/confirm", "/init",
             "/copy", "/clear", "/quit"]
@@ -902,6 +913,7 @@ KEY_ROWS = [
     ("esc", "stop the current turn"),
     ("ctrl-t", "show or hide the full reasoning"),
     ("ctrl-y", "copy the last answer"),
+    ("paste", "3+ lines becomes one object; backspace removes the whole paste"),
     ("ctrl-c", "quit"),
     ("scroll / ⌘C", "your terminal's own scrollback and copy: nothing is captured"),
 ]
@@ -935,6 +947,8 @@ class App:
         self.printer = Printer(self)
         self.show_thinking = cfg._raw.get("showThinking", False)
         self.session_name = None
+        self.pastes = {}             # id -> the text you pasted
+        self.paste_n = 0
         self.hist = Path.home() / ".sesame" / "history"
         self.hist.parent.mkdir(parents=True, exist_ok=True)
         self.session = self._make_session()
@@ -954,6 +968,33 @@ class App:
         @kb.add("c-y")
         def _(event):
             self.copy_last()
+
+        @kb.add(Keys.BracketedPaste)
+        def _(event):
+            """A pasted file becomes one object in the input, not fifty lines of it."""
+            data = event.data
+            if data.count("\n") + 1 < PASTE_MIN_LINES:
+                event.current_buffer.insert_text(data)
+                return
+            self.paste_n += 1
+            self.pastes[self.paste_n] = data
+            event.current_buffer.insert_text(paste_label(self.paste_n, data))
+
+        @kb.add("backspace")
+        def _(event):
+            """Backspace on a paste removes the whole paste, not one character of
+            its label."""
+            buf = event.current_buffer
+            before = buf.document.text_before_cursor
+            m = None
+            for hit in PASTE.finditer(before):
+                if hit.end() == len(before):
+                    m = hit
+            if m:
+                buf.delete_before_cursor(len(m.group(0)))
+                self.pastes.pop(int(m.group(1)), None)
+            else:
+                buf.delete_before_cursor(1)
 
         @kb.add("escape", eager=True)
         def _(event):
@@ -1163,6 +1204,14 @@ class App:
             self.pending["answer"] = False
             out(red("  ✗ denied"))
         self.pending["event"].set()
+
+    def expand(self, text):
+        """The label is for you. The model gets what you actually pasted."""
+        def swap(m):
+            return self.pastes.get(int(m.group(1)), m.group(0))
+        out_text = PASTE.sub(swap, text)
+        self.pastes.clear()
+        return out_text
 
     def copy_last(self):
         """The last answer, on the clipboard. Bound to ctrl-y and to /copy."""
@@ -1649,7 +1698,8 @@ class App:
                 continue
             if not text:
                 continue
-            out(f"{cyan('❯')} {text}")      # the echo, without the rule
+            out(f"{cyan('❯')} {text}")      # the echo keeps the paste label
+            text = self.expand(text)        # the model gets the paste itself
             if self.busy:
                 if text.startswith("/"):
                     out(dim("busy: esc to stop it first"))

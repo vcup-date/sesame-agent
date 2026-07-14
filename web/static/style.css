@@ -764,3 +764,22 @@ main { position: relative; }
 }
 .session:hover .s-del { opacity: 1; }
 .s-del:hover { background: var(--line); color: var(--bad); }
+
+.folded summary {
+  cursor: pointer;
+  color: var(--faint);
+  font-size: 12.5px;
+  padding: 4px 0;
+}
+.folded summary:hover { color: var(--accent); }
+.folded pre {
+  margin: 6px 0 0;
+  padding: 10px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font: 12px var(--mono);
+  white-space: pre;
+}

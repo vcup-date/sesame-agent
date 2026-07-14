@@ -1098,6 +1098,27 @@ check("and it is remembered, so the next turn does not try again",
       "https://picky.example/v1" in _shell.NO_REASONING_ECHO)
 _shell.NO_REASONING_ECHO.clear()
 
+# 10i. a paste is an object in the input, not a wall of text. The label is what you
+#      see; the model gets what you actually pasted.
+if _cli is not None:
+    _app = _cli.App.__new__(_cli.App)
+    _app.pastes, _app.paste_n = {}, 0
+
+    _text = "def main():\n    for i in range(10):\n        print(i)\n    return 0"
+    _label = _cli.paste_label(1, _text)
+    check("a paste is labelled with its size and a preview",
+          _label == "[paste #1 · 4 lines · def main():]")
+    _app.pastes[1] = _text
+    check("the model gets the paste, not the label",
+          _app.expand(f"{_label} what does this do?") == f"{_text} what does this do?")
+    check("and the paste is not sent twice", _app.pastes == {})
+
+    _app.pastes = {2: "a\nb\nc"}
+    check("a label with no paste behind it is left alone",
+          _app.expand("[paste #9 · 3 lines · x]") == "[paste #9 · 3 lines · x]")
+
+    check("one or two lines is just text, not an attachment", _cli.PASTE_MIN_LINES == 3)
+
 # 11. a keyless local endpoint is a valid setup: run.sh must not force setup on it
 import config as _config                          # noqa: E402
 

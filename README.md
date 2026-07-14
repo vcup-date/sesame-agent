@@ -143,6 +143,7 @@ listening is reported in about three seconds instead of being retried five times
 | `ctrl-t` | show or hide the full reasoning |
 | `ctrl-y` | copy the last answer |
 | `tab` | complete a command |
+| paste | 3 lines or more becomes one object in the input; backspace removes the whole thing |
 
 ## Headless
 

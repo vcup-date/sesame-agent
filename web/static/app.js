@@ -64,7 +64,19 @@ function userBlock(text, steered) {
   const n = el("div", "user" + (steered ? " steered" : ""));
   const b = el("div", "bubble");
   if (steered) b.appendChild(el("span", "tag", "sent while it was working"));
-  b.appendChild(document.createTextNode(text));
+  // a pasted file is shown folded: click to see it, rather than a screenful of it
+  const lines = text.split("\n");
+  if (lines.length > 14) {
+    const head = lines.slice(0, 3).join("\n");
+    const more = el("details", "folded");
+    const sum = el("summary", "", `${lines.length} lines pasted`);
+    more.appendChild(sum);
+    more.appendChild(el("pre", "", "")).textContent = text;
+    b.appendChild(document.createTextNode(head + "\n"));
+    b.appendChild(more);
+  } else {
+    b.appendChild(document.createTextNode(text));
+  }
   n.appendChild(b);
   return add(n);
 }
@@ -325,15 +337,62 @@ function grow() {
 }
 
 async function send() {
-  const text = input.value.trim();
-  if (!text) return;
+  const typed = input.value.trim();
+  if (!typed) return;
   input.value = "";
   grow();
+  const text = expandPastes(typed);      // the model gets what you pasted
   const r = await api("/api/send", { text });
   if (r.error) render({ t: "error", text: r.error });
 }
 
 input.addEventListener("input", grow);
+/* ── paste: a big paste is an object, not a wall of text ──────────────────── */
+const PASTE = /\[paste #(\d+) · (\d+) lines[^\]]*\]/g;
+const PASTE_MIN_LINES = 3;          // one or two lines is just typing
+const pastes = new Map();
+let pasteN = 0;
+
+function pasteLabel(id, text) {
+  const lines = text.split("\n").length;
+  const first = (text.split("\n").find((l) => l.trim()) || "").trim();
+  const preview = first.length > 32 ? first.slice(0, 32) + "…" : first;
+  return `[paste #${id} · ${lines} lines · ${preview}]`;
+}
+
+function expandPastes(text) {
+  const out = text.replace(PASTE, (whole, id) => pastes.get(Number(id)) ?? whole);
+  pastes.clear();
+  return out;
+}
+
+input.addEventListener("paste", (e) => {
+  const text = (e.clipboardData || window.clipboardData).getData("text");
+  if (!text || text.split("\n").length < PASTE_MIN_LINES) return;   // let it through
+  e.preventDefault();
+  const id = ++pasteN;
+  pastes.set(id, text);
+  const label = pasteLabel(id, text);
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  input.value = input.value.slice(0, start) + label + input.value.slice(end);
+  input.selectionStart = input.selectionEnd = start + label.length;
+  grow();
+});
+
+input.addEventListener("keydown", (e) => {
+  // backspace on a paste removes the paste, not one character of its label
+  if (e.key !== "Backspace" || input.selectionStart !== input.selectionEnd) return;
+  const before = input.value.slice(0, input.selectionStart);
+  const m = [...before.matchAll(PASTE)].find((x) => x.index + x[0].length === before.length);
+  if (!m) return;
+  e.preventDefault();
+  pastes.delete(Number(m[1]));
+  input.value = before.slice(0, m.index) + input.value.slice(input.selectionStart);
+  input.selectionStart = input.selectionEnd = m.index;
+  grow();
+});
+
 let composing = false;
 input.addEventListener("compositionstart", () => { composing = true; });
 input.addEventListener("compositionend", () => { composing = false; });
