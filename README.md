@@ -4,34 +4,6 @@ sesame agent is an agent you can put to work. Give it a task in your terminal or
 your browser and it goes and does it: reads and edits your files, runs commands,
 searches the web, drives a real browser, and shows you its thinking as it goes.
 
-## It does not forget what it was thinking
-
-An agent thinks, calls a tool, reads the result, and thinks again. Between those
-steps its reasoning is usually thrown away: the model gets its own tool calls back,
-but not the thinking that produced them. So at every step it reconstructs why it was
-doing this, from the evidence, like walking into a room and having to work out what
-you came in for.
-
-sesame agent hands the reasoning back with the next request, on both wires, so the
-model is still holding what it worked out.
-
-You can watch the difference. The model picks a number inside its reasoning, never
-says it out loud, calls a tool, and is then asked what the number was. It cannot
-work it out again, so either it can see its earlier thinking or it is guessing:
-
-```bash
-python3 test/reasoning.py 5
-```
-
-```
-reasoning carried back:      recalled its own reasoning 5/5
-reasoning dropped:           recalled its own reasoning 1/5   (one lucky guess)
-```
-
-That is the whole idea. Everything else here (undo, permissions that only stop what
-you cannot take back, sessions, memory, a sub agent, a browser, a terminal and a web
-interface on the same core) exists to make it a thing you can actually work with.
-
 **Using a coding agent?** Give it [SETUP.md](SETUP.md) and it will install,
 configure and launch this for you:
 
@@ -79,10 +51,15 @@ Pure Python. One required dependency. 20 files, 5.4k lines. Startup is about
 
 `shell.py` is the engine. It owns the wire, retries, the safety gate and the token
 ceiling. It does not plan, does not decide what to do next, and does not know what
-task it is running. The model does that, and it keeps its reasoning while it does:
-thinking blocks go back verbatim with every request, with the interleaved-thinking
-beta on the Anthropic wire and `reasoning_content` on the OpenAI one. A server that
-refuses the field is remembered, and gets the plain shape instead.
+task it is running. The model does that.
+
+Its reasoning is sent back with each request rather than dropped at the tool
+boundary: thinking blocks verbatim, with the interleaved-thinking beta on the
+Anthropic wire and `reasoning_content` on the OpenAI one. A server that refuses the
+field is remembered and gets the plain shape instead. `test/reasoning.py` shows what
+this changes: the model can still name a number it chose inside its reasoning and
+never said out loud, after a tool call. On ordinary work it makes no measurable
+difference to speed or to the result, so it is a property, not a selling point.
 
 ## Web and browser
 
