@@ -998,12 +998,20 @@ class App:
 
         @kb.add("enter")
         def _(event):
-            """A newline that arrives mid-burst belongs to the paste. Sending there is
-            what made a pasted file fire off as half a dozen half-messages."""
+            """Is this Enter the end of your message, or a newline inside a paste?
+
+            Timing alone cannot tell: a fast typist, and a script feeding "/help\r",
+            both look like a burst. The honest signal is whether more keys from the
+            same chunk are already parsed and waiting, which is true in the middle of
+            a paste and false when you press Enter. A paste that has already put a
+            newline in the buffer counts too, so its final newline does not send.
+            """
             buf = event.current_buffer
-            now = time.monotonic()
-            if now - self.last_key <= BURST:
-                self.last_key = now
+            pending = bool(event.app.key_processor.input_queue)
+            mid_paste = (self.burst_at is not None
+                         and "\n" in buf.text[self.burst_at:buf.cursor_position])
+            if pending or mid_paste:
+                self.last_key = time.monotonic()
                 buf.insert_text("\n")
                 self._arm_burst(event.app)
                 return
