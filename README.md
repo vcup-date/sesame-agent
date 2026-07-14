@@ -4,6 +4,27 @@ A lightweight, fast agent that runs in your terminal and in your browser. It rea
 and edits files, runs shell commands, searches the web, drives a real browser, and
 shows its reasoning while it works.
 
+## Why this exists
+
+A reasoning model already plans. It works out what to look at next, when it has
+enough, and when it is done, inside its own reasoning. This is built on the idea
+that the harness should then stay out of the way.
+
+`shell.py` is the engine, and it is 606 lines. It forwards tool calls out and
+results back, retries the network, stops at anything dangerous, and holds a ceiling
+on tokens and tool calls. It has no planner, no scripted loop, no guidance injected
+per model family, and nothing running in the background between turns that rewrites
+your prompt or your files. The model decides what happens next.
+
+The one thing it insists on is that reasoning survives the tool boundary. Thinking
+blocks go back to the model verbatim with the next request, so what it worked out at
+the start is still in front of it nine tool calls later, rather than being rebuilt
+from its own tool history.
+
+What a daily driver needs and a thin loop usually leaves out (undo, permissions,
+sessions, context management, memory, a sub agent) lives outside the loop instead of
+inside it. 5.4k lines, 20 files, one required dependency.
+
 **Using a coding agent?** Give it [SETUP.md](SETUP.md) and it will install,
 configure and launch this for you:
 
