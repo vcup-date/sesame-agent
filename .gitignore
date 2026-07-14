@@ -1,0 +1,20 @@
+# your data: sessions, undo checkpoints, permissions, and the config that holds your key
+.sesame/
+.env
+
+# local model launchers: machine-specific paths, not part of the project
+run_35b.sh
+run_27b.sh
+
+# scratch: things the agent built while being tested
+flappy/
+tetris/
+/*.png
+
+# working files
+report_full 2.md
+sesame.zip
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,27 @@
+[project]
+name = "sesame-agent"
+version = "0.5.0"
+description = "An AI agent in your terminal: files, shell, web, and a real browser"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "prompt_toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+# Real browser control (JS pages, clicks, forms, screenshots):
+#   pip install 'sesame-agent[browser]' && playwright install chromium
+browser = ["playwright>=1.44"]
+
+[project.scripts]
+sesame = "main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main", "cli", "loop", "config", "shell", "tools", "browser", "context",
+              "project", "models", "providers", "log", "checkpoint", "subagent", "danger",
+              "history", "transcript", "memory", "compact"]
