@@ -13,6 +13,28 @@ First run installs what it needs and sets up a model.
 
 ![a turn](docs/hero.png)
 
+## In a browser
+
+```bash
+./run.sh web            # http://127.0.0.1:9981
+```
+
+The same core, the same tools, the same session files. It is not a terminal being
+scraped: the web server drives the agent directly.
+
+![the web interface](docs/web.png)
+
+Streaming reasoning you can open, tool calls with their output and diffs,
+permission prompts with allow once / always / deny, steering while it works,
+sessions, undo, and every setting in one place: provider, key, model, your own
+endpoint, profiles, effort, permissions, working folder, theme and text size.
+
+When the model is local and its server reports progress (llama.cpp does), the
+status line shows the context being read, the rate, and how much of the prompt was
+served from cache, instead of a spinner.
+
+![settings](docs/web-settings.png)
+
 ## Lightweight and fast
 
 Pure Python. One required dependency. 20 files, 5.4k lines. Startup is about
@@ -31,13 +53,6 @@ its plan from its own tool calls at every step.
 sesame agent sends the reasoning back with each step, verbatim: the
 interleaved-thinking beta on the Anthropic wire, `reasoning_content` on the
 OpenAI one. The model keeps what it worked out earlier.
-
-`bench/reasoning.py` runs the same task both ways against your configured model
-and prints the result:
-
-```bash
-python3 bench/reasoning.py 10
-```
 
 ## Web and browser
 
@@ -154,7 +169,6 @@ writes a debug log with the API key redacted.
 ```bash
 python3 test/units.py        # 176 offline tests, no network
 python3 test/smoke.py        # against the live API
-python3 bench/reasoning.py
 ```
 
 `shell.py` talks to the model and runs its tools. `loop.py` holds the

@@ -2,6 +2,7 @@
 # sesame — launcher. First run installs everything and sets up your model.
 #
 #   ./run.sh              start sesame (installs + sets up on first run)
+#   ./run.sh web          the browser interface on http://127.0.0.1:9981
 #   ./run.sh doctor       check the install, config, and connection
 #   ./run.sh doctor --fix fix what it can
 #   ./run.sh setup        change provider / API key / model
@@ -42,6 +43,10 @@ export PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}"
 case "${1:-}" in
   doctor|setup)
     exec "$PY" "$HERE/main.py" "$@"
+    ;;
+  web)
+    shift
+    exec "$PY" "$HERE/web/server.py" "$@"
     ;;
 esac
 

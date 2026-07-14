@@ -34,6 +34,7 @@ import browser
 
 class Listener:
     """Exactly the protocol the TUI implements."""
+    def on_raw(self, ev): ...        # the shell's own event, ids and all
     def on_thinking(self, delta): ...
     def on_thinking_done(self): ...
     def on_text(self, delta): ...
@@ -151,6 +152,8 @@ class Loop:
         ln = self._ln
         if ln is None:
             return
+        ln.on_raw(ev)                # a listener that needs the call ids (the web UI
+                                     # pairs a result to its card) takes them here
         if ln.stop_requested():
             # KeyboardInterrupt, not a custom exception: it is the ONE abort path
             # shell.run already knows how to unwind cleanly — it lands the partial

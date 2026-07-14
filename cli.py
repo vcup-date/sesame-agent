@@ -1055,7 +1055,7 @@ class App:
         d = os.path.basename(self.cfg.workdir) or self.cfg.workdir
         agents = f"  {dim('·')}  {green('AGENTS.md')}" if self.loop.project_files else ""
         out()
-        out(f"{bold('✳ sesame')}")
+        out(f"{bold('✳ sesame agent')}")
         out(f"{cyan(self.cfg.model)}  {dim('·')}  {d}{agents}")
         out(dim("type a task, or / for commands"))
         out()
