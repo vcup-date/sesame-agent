@@ -9,6 +9,7 @@ Only the input prompt is live, at the bottom. While the agent works, typing
 steers it (the message is handed to the model at its next step) and esc stops it.
 """
 
+import asyncio
 import os
 import re
 import shutil
@@ -876,6 +877,7 @@ RESTART = "\x00restart"        # sentinel: redraw the prompt at a new height
 
 PASTE = re.compile(r"\[paste #(\d+) · (\d+) lines[^\]]*\]")
 PASTE_MIN_LINES = 3          # 1 or 2 lines is just typing; more is an attachment
+BURST = 0.02                 # keys this close together are a paste, not a typist
 
 
 def paste_label(pid, text):
@@ -949,6 +951,9 @@ class App:
         self.session_name = None
         self.pastes = {}             # id -> the text you pasted
         self.paste_n = 0
+        self.last_key = 0.0          # when the last character arrived
+        self.burst_at = None         # where the current burst of characters began
+        self.burst_id = 0            # so an old timer cannot close a new burst
         self.hist = Path.home() / ".sesame" / "history"
         self.hist.parent.mkdir(parents=True, exist_ok=True)
         self.session = self._make_session()
@@ -971,14 +976,39 @@ class App:
 
         @kb.add(Keys.BracketedPaste)
         def _(event):
-            """A pasted file becomes one object in the input, not fifty lines of it."""
-            data = event.data
-            if data.count("\n") + 1 < PASTE_MIN_LINES:
-                event.current_buffer.insert_text(data)
+            """A pasted file becomes one object in the input, not fifty lines of it.
+
+            This is the clean path, used by terminals that wrap a paste in markers
+            (iTerm2, most Linux terminals). Terminal.app does not, so the keys below
+            catch it by timing instead.
+            """
+            self._take_paste(event.current_buffer, event.data)
+
+        @kb.add(Keys.Any)
+        def _(event):
+            """Every ordinary character. Ones that arrive in a burst are a paste."""
+            buf = event.current_buffer
+            now = time.monotonic()
+            if now - self.last_key > BURST:      # a fresh keystroke: any burst is over
+                self._end_burst(buf)
+                self.burst_at = buf.cursor_position
+            self.last_key = now
+            buf.insert_text(event.data)
+            self._arm_burst(event.app)
+
+        @kb.add("enter")
+        def _(event):
+            """A newline that arrives mid-burst belongs to the paste. Sending there is
+            what made a pasted file fire off as half a dozen half-messages."""
+            buf = event.current_buffer
+            now = time.monotonic()
+            if now - self.last_key <= BURST:
+                self.last_key = now
+                buf.insert_text("\n")
+                self._arm_burst(event.app)
                 return
-            self.paste_n += 1
-            self.pastes[self.paste_n] = data
-            event.current_buffer.insert_text(paste_label(self.paste_n, data))
+            self._end_burst(buf)
+            buf.validate_and_handle()
 
         @kb.add("backspace")
         def _(event):
@@ -1204,6 +1234,48 @@ class App:
             self.pending["answer"] = False
             out(red("  ✗ denied"))
         self.pending["event"].set()
+
+    def _take_paste(self, buf, data):
+        if data.count("\n") + 1 < PASTE_MIN_LINES:
+            buf.insert_text(data)
+            return
+        self.paste_n += 1
+        self.pastes[self.paste_n] = data
+        buf.insert_text(paste_label(self.paste_n, data))
+
+    def _arm_burst(self, app):
+        """Close the paste a moment after the characters stop arriving, so you see the
+        label right away instead of a screenful of what you pasted until you happen to
+        press another key."""
+        self.burst_id += 1
+        mine = self.burst_id
+
+        async def later():
+            await asyncio.sleep(0.12)
+            if mine != self.burst_id or self.burst_at is None:
+                return
+            self._end_burst(app.current_buffer)
+            app.invalidate()
+
+        try:
+            app.create_background_task(later())
+        except Exception:                        # no running loop: fold on the next key
+            pass
+
+    def _end_burst(self, buf):
+        """Fold the characters that just poured in into one paste object."""
+        start, self.burst_at = self.burst_at, None
+        if start is None or buf.cursor_position <= start:
+            return
+        end = buf.cursor_position
+        chunk = buf.text[start:end]
+        if chunk.count("\n") + 1 < PASTE_MIN_LINES:
+            return
+        self.paste_n += 1
+        self.pastes[self.paste_n] = chunk
+        label = paste_label(self.paste_n, chunk)
+        buf.text = buf.text[:start] + label + buf.text[end:]
+        buf.cursor_position = start + len(label)
 
     def expand(self, text):
         """The label is for you. The model gets what you actually pasted."""

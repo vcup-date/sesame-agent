@@ -366,18 +366,38 @@ function expandPastes(text) {
   return out;
 }
 
+function takePaste(text) {
+  if (!text) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  let insert = text;
+  if (text.split("\n").length >= PASTE_MIN_LINES) {
+    const id = ++pasteN;
+    pastes.set(id, text);
+    insert = pasteLabel(id, text);
+  }
+  input.value = input.value.slice(0, start) + insert + input.value.slice(end);
+  input.selectionStart = input.selectionEnd = start + insert.length;
+  input.focus();
+  grow();
+}
+
 input.addEventListener("paste", (e) => {
   const text = (e.clipboardData || window.clipboardData).getData("text");
-  if (!text || text.split("\n").length < PASTE_MIN_LINES) return;   // let it through
+  if (!text || text.split("\n").length < PASTE_MIN_LINES) return;   // short: let it through
   e.preventDefault();
-  const id = ++pasteN;
-  pastes.set(id, text);
-  const label = pasteLabel(id, text);
-  const start = input.selectionStart;
-  const end = input.selectionEnd;
-  input.value = input.value.slice(0, start) + label + input.value.slice(end);
-  input.selectionStart = input.selectionEnd = start + label.length;
-  grow();
+  takePaste(text);
+});
+
+// paste with the page focused, not the box. Otherwise cmd-v anywhere but the input
+// goes nowhere, and you have to click the box first, which nobody remembers to do.
+document.addEventListener("paste", (e) => {
+  const el = document.activeElement;
+  if (el === input || el.tagName === "INPUT" || el.isContentEditable) return;
+  const text = (e.clipboardData || window.clipboardData).getData("text");
+  if (!text) return;
+  e.preventDefault();
+  takePaste(text);
 });
 
 input.addEventListener("keydown", (e) => {
