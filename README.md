@@ -46,7 +46,7 @@ served from cache, instead of a spinner.
 
 ## Lightweight and fast
 
-Pure Python. One required dependency. 20 files, 5.4k lines. Startup is about
+Pure Python. One required dependency. 20 files, 5.7k lines. Startup is about
 70ms and it holds around 45MB.
 
 `shell.py` is the engine. It owns the wire, retries, the safety gate and the token
@@ -175,8 +175,9 @@ writes a debug log with the API key redacted.
 ## Development
 
 ```bash
-python3 test/units.py        # 176 offline tests, no network
+python3 test/units.py        # 190 offline tests, no network
 python3 test/smoke.py        # against the live API
+python3 test/reasoning.py    # can it still see its own reasoning after a tool call
 ```
 
 `shell.py` talks to the model and runs its tools. `loop.py` holds the
