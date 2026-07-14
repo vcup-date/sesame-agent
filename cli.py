@@ -878,6 +878,7 @@ RESTART = "\x00restart"        # sentinel: redraw the prompt at a new height
 PASTE = re.compile(r"\[paste #(\d+) · (\d+) lines[^\]]*\]")
 PASTE_MIN_LINES = 3          # 1 or 2 lines is just typing; more is an attachment
 BURST = 0.02                 # keys this close together are a paste, not a typist
+SETTLE = 0.06                # wait this long before deciding an Enter was really Enter
 
 
 def paste_label(pid, text):
@@ -954,6 +955,7 @@ class App:
         self.last_key = 0.0          # when the last character arrived
         self.burst_at = None         # where the current burst of characters began
         self.burst_id = 0            # so an old timer cannot close a new burst
+        self.key_seq = 0             # every key bumps it; a paste keeps bumping it
         self.hist = Path.home() / ".sesame" / "history"
         self.hist.parent.mkdir(parents=True, exist_ok=True)
         self.session = self._make_session()
@@ -989,6 +991,7 @@ class App:
             """Every ordinary character. Ones that arrive in a burst are a paste."""
             buf = event.current_buffer
             now = time.monotonic()
+            self.key_seq += 1
             if now - self.last_key > BURST:      # a fresh keystroke: any burst is over
                 self._end_burst(buf)
                 self.burst_at = buf.cursor_position
@@ -998,25 +1001,53 @@ class App:
 
         @kb.add("enter")
         def _(event):
-            """Is this Enter the end of your message, or a newline inside a paste?
+            """Is this Enter the end of your message, or a line break inside a paste?
 
-            Timing alone cannot tell: a fast typist, and a script feeding "/help\r",
-            both look like a burst. The honest signal is whether more keys from the
-            same chunk are already parsed and waiting, which is true in the middle of
-            a paste and false when you press Enter. A paste that has already put a
-            newline in the buffer counts too, so its final newline does not send.
+            Terminal.app tells you nothing: it sends no bracketed-paste markers, it
+            sends CR for every line break in the paste (so a pasted line break arrives
+            as this exact key, not as text), and it delivers the paste in chunks, so at
+            a chunk boundary there is nothing queued behind the key to give it away.
+
+            What separates the two is only what happens next: a paste keeps coming. So
+            put the newline in, wait a moment, and if nothing else arrived, and this
+            burst holds no other line breaks, then it was you pressing Enter.
             """
             buf = event.current_buffer
-            pending = bool(event.app.key_processor.input_queue)
-            mid_paste = (self.burst_at is not None
-                         and "\n" in buf.text[self.burst_at:buf.cursor_position])
-            if pending or mid_paste:
-                self.last_key = time.monotonic()
-                buf.insert_text("\n")
-                self._arm_burst(event.app)
-                return
-            self._end_burst(buf)
-            buf.validate_and_handle()
+            self.key_seq += 1
+            self.last_key = time.monotonic()
+            if self.burst_at is None:
+                self.burst_at = buf.cursor_position
+            buf.insert_text("\n")
+            self._arm_burst(event.app)
+
+            mark, app = self.key_seq, event.app
+
+            async def settle():
+                await asyncio.sleep(SETTLE)
+                if mark != self.key_seq:
+                    return                    # more keys arrived: this was a paste
+                b = app.current_buffer
+                start = self.burst_at
+                in_paste = (start is not None
+                            and "\n" in b.text[start:max(start, b.cursor_position - 1)])
+                if in_paste:                  # a paste that ended on a line break
+                    self._end_burst(b)
+                    app.invalidate()
+                    return
+                if b.text.endswith("\n"):     # you pressed Enter: take it back, send
+                    b.text = b.text[:-1]
+                    b.cursor_position = len(b.text)
+                self._end_burst(b)
+                b.validate_and_handle()
+
+            try:
+                app.create_background_task(settle())
+            except Exception:                 # no loop running: behave like a plain Enter
+                if buf.text.endswith("\n"):
+                    buf.text = buf.text[:-1]
+                    buf.cursor_position = len(buf.text)
+                self._end_burst(buf)
+                buf.validate_and_handle()
 
         @kb.add("backspace")
         def _(event):
