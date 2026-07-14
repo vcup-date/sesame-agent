@@ -880,6 +880,19 @@ PASTE_MIN_LINES = 3          # 1 or 2 lines is just typing; more is an attachmen
 BURST = 0.02                 # keys this close together are a paste, not a typist
 SETTLE = 0.06                # wait this long before deciding an Enter was really Enter
 
+KEYLOG = os.environ.get("SESAME_KEYLOG")
+
+
+def klog(msg):
+    """SESAME_KEYLOG=/tmp/keys.log ./run.sh  -> what the prompt actually received."""
+    if not KEYLOG:
+        return
+    try:
+        with open(KEYLOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.monotonic():9.4f}  {msg}\n")
+    except OSError:
+        pass
+
 
 def paste_label(pid, text):
     lines = text.count("\n") + 1
@@ -978,6 +991,7 @@ class App:
 
         @kb.add(Keys.BracketedPaste)
         def _(event):
+            klog(f"BRACKETED PASTE {len(event.data)} bytes")
             """A pasted file becomes one object in the input, not fifty lines of it.
 
             This is the clean path, used by terminals that wrap a paste in markers
@@ -992,6 +1006,8 @@ class App:
             buf = event.current_buffer
             now = time.monotonic()
             self.key_seq += 1
+            klog(f"char {event.data!r} queued={len(event.app.key_processor.input_queue)} "
+                 f"gap={now - self.last_key:.4f} burst_at={self.burst_at}")
             if now - self.last_key > BURST:      # a fresh keystroke: any burst is over
                 self._end_burst(buf)
                 self.burst_at = buf.cursor_position
@@ -1014,6 +1030,9 @@ class App:
             """
             buf = event.current_buffer
             self.key_seq += 1
+            klog(f"ENTER queued={len(event.app.key_processor.input_queue)} "
+                 f"gap={time.monotonic() - self.last_key:.4f} burst_at={self.burst_at} "
+                 f"text={buf.text[:40]!r}")
             self.last_key = time.monotonic()
             if self.burst_at is None:
                 self.burst_at = buf.cursor_position
@@ -1275,6 +1294,11 @@ class App:
         self.pending["event"].set()
 
     def _take_paste(self, buf, data):
+        # Terminal.app sends CR for every line break, inside the bracketed paste as
+        # well. Counting "\n" here found one line in a forty line file, so the paste
+        # was declared too small to fold and went into the prompt whole. That was the
+        # bug: not the markers, not the timing, this line.
+        data = data.replace("\r\n", "\n").replace("\r", "\n")
         if data.count("\n") + 1 < PASTE_MIN_LINES:
             buf.insert_text(data)
             return
@@ -1305,9 +1329,11 @@ class App:
         """Fold the characters that just poured in into one paste object."""
         start, self.burst_at = self.burst_at, None
         if start is None or buf.cursor_position <= start:
+            klog(f"end_burst: nothing to fold (start={start}, cursor={buf.cursor_position})")
             return
         end = buf.cursor_position
         chunk = buf.text[start:end]
+        klog(f"end_burst: {chunk.count(chr(10)) + 1} lines, {len(chunk)} chars")
         if chunk.count("\n") + 1 < PASTE_MIN_LINES:
             return
         self.paste_n += 1

@@ -368,6 +368,7 @@ function expandPastes(text) {
 
 function takePaste(text) {
   if (!text) return;
+  text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");   // CR line breaks count too
   const start = input.selectionStart ?? input.value.length;
   const end = input.selectionEnd ?? start;
   let insert = text;
@@ -383,7 +384,8 @@ function takePaste(text) {
 }
 
 input.addEventListener("paste", (e) => {
-  const text = (e.clipboardData || window.clipboardData).getData("text");
+  const raw = (e.clipboardData || window.clipboardData).getData("text");
+  const text = (raw || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   if (!text || text.split("\n").length < PASTE_MIN_LINES) return;   // short: let it through
   e.preventDefault();
   takePaste(text);
