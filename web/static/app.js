@@ -35,8 +35,14 @@ let pinned = true;
 
 scroll.addEventListener("scroll", () => {
   pinned = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 90;
+  $("toBottom").classList.toggle("hidden", pinned);
 });
 const toBottom = () => { if (pinned) scroll.scrollTop = scroll.scrollHeight; };
+$("toBottom").onclick = () => {
+  pinned = true;
+  scroll.scrollTop = scroll.scrollHeight;
+  $("toBottom").classList.add("hidden");
+};
 
 function clearThread() {
   thread.innerHTML = "";
@@ -71,8 +77,43 @@ function reasonBlock() {
   return add(n);
 }
 
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = el("textarea");           // clipboard API needs https or localhost
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  const was = btn.textContent;
+  btn.textContent = "copied";
+  setTimeout(() => { btn.textContent = was; }, 1200);
+}
+
 function answerBlock() {
-  return add(el("div", "answer"));
+  const n = el("div", "answer");
+  const copy = el("button", "copy-btn", "copy");
+  copy.onclick = () => copyText(n.dataset.raw || n.innerText, copy);
+  n.appendChild(copy);
+  return add(n);
+}
+
+function decorate(answer) {
+  // the copy button is rewritten away every time the markdown re-renders
+  if (!answer.querySelector(".copy-btn")) {
+    const copy = el("button", "copy-btn", "copy");
+    copy.onclick = () => copyText(answer.dataset.raw || answer.innerText, copy);
+    answer.appendChild(copy);
+  }
+  answer.querySelectorAll("pre").forEach((pre) => {
+    if (pre.querySelector(".copy-btn")) return;
+    const copy = el("button", "copy-btn", "copy");
+    copy.onclick = () => copyText(pre.innerText.replace(/copy$/, ""), copy);
+    pre.appendChild(copy);
+  });
 }
 
 function toolCard(ev) {
@@ -171,12 +212,14 @@ function render(ev) {
       if (!state.answer) state.answer = answerBlock();
       state.answer.dataset.raw = (state.answer.dataset.raw || "") + ev.text;
       state.answer.innerHTML = md(state.answer.dataset.raw);
+      decorate(state.answer);
       toBottom();
       break;
     case "answer_done": {
       const n = state.answer || answerBlock();
       n.dataset.raw = ev.text;
       n.innerHTML = md(ev.text);
+      decorate(n);
       state.answer = null;
       break;
     }
@@ -291,7 +334,13 @@ async function send() {
 }
 
 input.addEventListener("input", grow);
+let composing = false;
+input.addEventListener("compositionstart", () => { composing = true; });
+input.addEventListener("compositionend", () => { composing = false; });
 input.addEventListener("keydown", (e) => {
+  // Enter while an IME is open chooses a candidate. Sending there would cut the
+  // word in half and fire whatever was typed so far.
+  if (composing || e.isComposing || e.keyCode === 229) return;
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 document.addEventListener("keydown", (e) => {
@@ -320,11 +369,22 @@ document.querySelectorAll(".chip").forEach((c) => {
 });
 
 /* ── sessions ───────────────────────────────────────────────────────────── */
-async function loadSessions() {
-  const { sessions } = await api("/api/sessions");
+let allSessions = [];
+
+$("sessionSearch").addEventListener("input", () => paintSessions());
+
+function paintSessions() {
+  const q = $("sessionSearch").value.trim().toLowerCase();
   const box = $("sessions");
   box.innerHTML = "";
-  sessions.forEach((s) => {
+  const shown = q
+    ? allSessions.filter((s) => (s.title || s.name).toLowerCase().includes(q))
+    : allSessions;
+  if (!shown.length) {
+    box.appendChild(el("div", "empty-list", q ? "No session matches." : "No sessions yet."));
+    return;
+  }
+  shown.forEach((s) => {
     const b = el("button", "session" + (s.name === state.cfg.session ? " on" : ""));
     b.innerHTML = `<span class="s-name"></span><span class="s-meta"></span>`;
     b.querySelector(".s-name").textContent = s.title || s.name;
@@ -335,8 +395,23 @@ async function loadSessions() {
       const r = await api("/api/session/resume", { name: s.name });
       if (r.state) { state.cfg = r.state; paintConfig(); }
     };
+    const x = el("button", "s-del", "✕");
+    x.title = "Delete this session";
+    x.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete "${s.title || s.name}"? This cannot be undone.`)) return;
+      await api("/api/session/delete", { name: s.name });
+      loadSessions();
+    };
+    b.appendChild(x);
     box.appendChild(b);
   });
+}
+
+async function loadSessions() {
+  const { sessions } = await api("/api/sessions");
+  allSessions = sessions;
+  paintSessions();
 }
 
 /* ── settings ───────────────────────────────────────────────────────────── */
@@ -647,6 +722,11 @@ async function boot() {
 
   // from the tip, not from zero: the history above is already on screen
   const es = new EventSource("/api/events?since=" + (state.cfg.lastEvent || 0));
+  es.onopen = () => $("offline").classList.add("hidden");
+  es.onerror = () => {
+    // the browser retries on its own; say so instead of going quietly dead
+    $("offline").classList.remove("hidden");
+  };
   es.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.id <= state.lastId) return;   // a replayed event, already on screen

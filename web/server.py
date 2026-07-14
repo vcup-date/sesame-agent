@@ -437,6 +437,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/session/resume":
             ok = AGENT.resume(b.get("name") or "")
             return self._json({"ok": ok, "state": AGENT.state()})
+        if u.path == "/api/session/delete":
+            return self._json(self._delete(b.get("name") or ""))
         if u.path == "/api/undo":
             return self._json(self._undo(b))
         if u.path == "/api/compact":
@@ -497,6 +499,18 @@ class Handler(BaseHTTPRequestHandler):
                         "turns": r["turns"], "messages": r["messages"],
                         "cost": round(r["cost"], 4)})
         return out
+
+    def _delete(self, name):
+        if not name:
+            return {"ok": False, "error": "no session"}
+        path = tx._path(name)
+        if not path.is_file():
+            return {"ok": False, "error": "no such session"}
+        path.unlink()
+        if AGENT.session_name == name:          # you deleted the one you are in
+            AGENT.new_session()
+        AGENT.emit({"t": "config", **AGENT.state()})
+        return {"ok": True}
 
     def _models(self, refresh=False):
         c = AGENT.cfg

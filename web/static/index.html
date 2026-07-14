@@ -16,6 +16,7 @@
   </div>
 
   <div class="rail-label">Sessions</div>
+  <input id="sessionSearch" class="search" placeholder="Search sessions" autocomplete="off">
   <div id="sessions" class="sessions"></div>
 
   <div class="rail-foot">
@@ -46,6 +47,8 @@
     </div>
   </header>
 
+  <div id="offline" class="offline hidden">connection lost, reconnecting…</div>
+
   <div id="scroll">
     <div id="thread"></div>
     <div id="empty" class="empty">
@@ -59,6 +62,8 @@
       </div>
     </div>
   </div>
+
+  <button id="toBottom" class="to-bottom hidden">↓ latest</button>
 
   <div id="composer">
     <div id="statusline" class="statusline hidden">

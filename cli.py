@@ -32,6 +32,7 @@ from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML, FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
@@ -420,37 +421,65 @@ def animate(app):
 
 # ── arrow-key selector ───────────────────────────────────────────────────────
 def select(title, rows, current=None):
-    """rows: [(label, value)] -> value, or None if cancelled.
+    """rows: [(label, value)] -> value, or None if cancelled. A value of None is a
+    heading. Type to filter: with a hundred sessions or thirty models, arrowing
+    through the list is not a way to find anything.
 
-    Built on prompt_toolkit rather than raw terminal mode: two different pieces
-    of code driving termios in the same process is how the arrows stopped
-    working. It renders inline (no full screen) and disappears when done.
+    Built on prompt_toolkit rather than raw terminal mode: two different pieces of
+    code driving termios in the same process is how the arrows stopped working. It
+    renders inline (no full screen) and disappears when done.
     """
     if not sys.stdin.isatty() or not rows:
         return None
 
-    pickable = [i for i, (_l, v) in enumerate(rows) if v is not None]
-    if not pickable:
+    flt = [""]
+    view = [list(rows)]
+    idx = [0]
+
+    def refilter(keep=None):
+        f = flt[0].lower()
+        view[0] = ([r for r in rows if r[1] is not None and f in r[0].lower()]
+                   if f else list(rows))
+        pick = [i for i, (_l, v) in enumerate(view[0]) if v is not None]
+        if not pick:
+            idx[0] = 0
+            return
+        if keep is not None:
+            idx[0] = next((i for i, (_l, v) in enumerate(view[0]) if v == keep), pick[0])
+        idx[0] = idx[0] if idx[0] in pick else pick[0]
+
+    refilter(current)
+    if not any(v is not None for _l, v in view[0]):
         return None
-    idx = [next((i for i, (_l, v) in enumerate(rows) if v == current), pickable[0])]
-    if idx[0] not in pickable:
-        idx[0] = pickable[0]
-    height = min(len(rows), max(5, term_rows() - 8))
+
+    def height():
+        return min(max(len(view[0]), 1), max(5, term_rows() - 8))
 
     def step(delta):
-        here = pickable.index(idx[0]) if idx[0] in pickable else 0
-        idx[0] = pickable[(here + delta) % len(pickable)]
+        pick = [i for i, (_l, v) in enumerate(view[0]) if v is not None]
+        if not pick:
+            return
+        here = pick.index(idx[0]) if idx[0] in pick else 0
+        idx[0] = pick[(here + delta) % len(pick)]
 
     frame = [0]
 
     def render():
         frame[0] += 1
-        top = max(0, min(idx[0] - height // 2, len(rows) - height))
-        parts = [("class:sel.title", f"  {title}"),
-                 ("class:sel.hint", "   ↑/↓ choose · enter select · esc cancel\n")]
-        for i in range(top, min(top + height, len(rows))):
-            label = rows[i][0][:cols() - 4]
-            if rows[i][1] is None:                       # a heading, not an option
+        h = height()
+        rws = view[0]
+        top = max(0, min(idx[0] - h // 2, len(rws) - h))
+        hint = "   ↑/↓ choose · enter select · type to filter · esc cancel\n"
+        parts = [("class:sel.title", f"  {title}"), ("class:sel.hint", hint)]
+        if flt[0]:
+            parts.append(("class:mark", f"  filter: {flt[0]}"))
+            parts.append(("class:sel.hint", f"   {len(rws)} match"
+                                            f"{'' if len(rws) == 1 else 'es'}\n"))
+        if not rws:
+            parts.append(("class:sel.off", "    nothing matches\n"))
+        for i in range(top, min(top + h, len(rws))):
+            label = rws[i][0][:cols() - 4]
+            if rws[i][1] is None:
                 parts.append(("class:sel.head", f"  {label}\n"))
             elif i == idx[0]:
                 parts.append((f"fg:{breathe(frame[0])} bold", "  ❯ "))
@@ -459,8 +488,8 @@ def select(title, rows, current=None):
                 parts.append(("", "\n"))
             else:
                 parts.append(("class:sel.off", f"    {label}\n"))
-        if len(rows) > height:
-            parts.append(("class:sel.hint", f"  {idx[0] + 1}/{len(rows)}"))
+        if len(rws) > h:
+            parts.append(("class:sel.hint", f"  {idx[0] + 1}/{len(rws)}"))
         return parts
 
     kb = KeyBindings()
@@ -477,20 +506,38 @@ def select(title, rows, current=None):
 
     @kb.add("pageup")
     def _(e):
-        idx[0] = max(0, idx[0] - height)
+        idx[0] = max(0, idx[0] - height())
 
     @kb.add("pagedown")
     def _(e):
-        idx[0] = min(len(rows) - 1, idx[0] + height)
+        idx[0] = min(max(0, len(view[0]) - 1), idx[0] + height())
 
     @kb.add("enter")
     def _(e):
-        e.app.exit(result=rows[idx[0]][1])
+        rws = view[0]
+        if rws and rws[idx[0]][1] is not None:
+            e.app.exit(result=rws[idx[0]][1])
+
+    @kb.add("backspace")
+    def _(e):
+        if flt[0]:
+            flt[0] = flt[0][:-1]
+            refilter()
+
+    @kb.add(Keys.Any)
+    def _(e):
+        ch = e.data
+        if ch and ch.isprintable():
+            flt[0] += ch
+            refilter()
 
     @kb.add("escape", eager=True)
     @kb.add("c-c")
-    @kb.add("q")
     def _(e):
+        if flt[0]:                       # esc clears the filter before it gives up
+            flt[0] = ""
+            refilter()
+            return
         e.app.exit(result=None)
 
     app = Application(
@@ -854,6 +901,7 @@ KEY_ROWS = [
     ("enter", "send · while it works, your message steers it"),
     ("esc", "stop the current turn"),
     ("ctrl-t", "show or hide the full reasoning"),
+    ("ctrl-y", "copy the last answer"),
     ("ctrl-c", "quit"),
     ("scroll / ⌘C", "your terminal's own scrollback and copy: nothing is captured"),
 ]
@@ -902,6 +950,10 @@ class App:
         def _(event):
             self.show_thinking = not self.show_thinking
             out(dim(f"reasoning {'shown' if self.show_thinking else 'collapsed'}"))
+
+        @kb.add("c-y")
+        def _(event):
+            self.copy_last()
 
         @kb.add("escape", eager=True)
         def _(event):
@@ -1112,6 +1164,22 @@ class App:
             out(red("  ✗ denied"))
         self.pending["event"].set()
 
+    def copy_last(self):
+        """The last answer, on the clipboard. Bound to ctrl-y and to /copy."""
+        text = self.printer.last_answer
+        if not text:
+            out(dim("nothing to copy yet"))
+            return
+        for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["xsel", "-b"]):
+            try:
+                subprocess.run(cmd, input=text, encoding="utf-8", check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                out(dim(f"copied {len(text)} characters"))
+                return
+            except (OSError, subprocess.SubprocessError):
+                continue
+        out(dim("no clipboard tool found (pbcopy, xclip, xsel)"))
+
     def _redraw(self, full=False):
         """full=True when the prompt changes height: the spinner block appears or
         disappears.
@@ -1225,18 +1293,7 @@ class App:
                 p.write_text(INIT_TEMPLATE)
                 out(dim("wrote AGENTS.md, fill it in and restart"))
         elif cmd == "/copy":
-            text = self.printer.last_answer
-            if not text:
-                out(dim("nothing to copy"))
-            else:
-                for c in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["xsel", "-b"]):
-                    try:
-                        subprocess.run(c, input=text.encode(), check=True,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        out(dim(f"copied {len(text)} chars"))
-                        break
-                    except Exception:
-                        continue
+            self.copy_last()
         elif cmd == "/clear":
             self.loop.close()
             self.loop = Loop(self.cfg)
@@ -1446,8 +1503,19 @@ class App:
                 f"{tok(self.cfg.context_window)} ctx · {price}"))
 
     # ── sessions ─────────────────────────────────────────────────────────────
+    def _title_of(self, row):
+        """The first thing you said in that session. A filename tells you nothing,
+        and with a hundred sessions the list has to be searchable."""
+        try:
+            for m in tx.parse(row["path"])[0]:
+                if m.get("role") == "user" and isinstance(m.get("content"), str):
+                    return m["content"].strip().splitlines()[0][:46]
+        except (OSError, KeyError):
+            pass
+        return row["name"]
+
     def _resume(self, name=None):
-        rows = tx.list_sessions()
+        rows = sorted(tx.list_sessions(), key=lambda r: r["updated"], reverse=True)
         if not rows:
             out(dim("no sessions yet"))
             return
@@ -1455,8 +1523,10 @@ class App:
             opts = []
             for r in rows:
                 when = time.strftime("%m-%d %H:%M", time.localtime(r["updated"]))
-                opts.append((f"{r['name']:<24} {when} · {r['turns']} turns · "
-                             f"{r['messages']} msgs · ${r['cost']:.4f}", r["name"]))
+                title = self._title_of(r)
+                opts.append((f"{title:<48} {when} · {r['turns']} turn"
+                             f"{'' if r['turns'] == 1 else 's'}"
+                             + (f" · ${r['cost']:.3f}" if r["cost"] else ""), r["name"]))
             name = select("resume a session", opts)
             if not name:
                 out(dim("cancelled"))

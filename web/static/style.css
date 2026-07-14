@@ -106,6 +106,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: var(--faint);
 }
 
+.search {
+  margin: 0 10px 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 13px;
+}
+.search:focus { border-color: var(--accent-dim); outline: none; }
+
 .sessions {
   flex: 1;
   min-height: 0;
@@ -688,3 +698,69 @@ select { cursor: pointer; }
   .sheet-body { grid-template-columns: 1fr; }
   .tabs { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
 }
+
+/* ── polish ───────────────────────────────────────────────────────────────── */
+.offline {
+  padding: 6px 20px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  color: var(--warn);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+main { position: relative; }
+.to-bottom {
+  position: absolute;
+  bottom: 118px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .28);
+}
+.to-bottom:hover { color: var(--text); border-color: var(--accent-dim); }
+
+.answer, .answer pre { position: relative; }
+.copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--faint);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.answer:hover > .copy-btn, .answer pre:hover .copy-btn { opacity: 1; }
+.copy-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+
+.session { position: relative; padding-right: 26px; }
+.s-del {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--faint);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+}
+.session:hover .s-del { opacity: 1; }
+.s-del:hover { background: var(--line); color: var(--bad); }
