@@ -28,6 +28,12 @@ def _install_defaults():
 
 
 class Printer:
+    # loop.py offers the raw event stream to listeners that want the tool call ids
+    # (the web UI pairs a result with its card). This one does not, but it must
+    # answer the call.
+    def on_raw(self, ev):
+        pass
+
     """Headless listener: --print, pipes, CI."""
 
     def __init__(self, show_thinking=True):
@@ -165,7 +171,7 @@ def main():
             sys.exit(f"check failed: {exc}")
         return
 
-    from loop import Loop
+    from loop import Listener, Loop
 
     # Headless: --print, or stdin is not a terminal (pipes, CI).
     if args.prompt or not sys.stdin.isatty():

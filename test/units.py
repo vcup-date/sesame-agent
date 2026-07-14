@@ -1011,6 +1011,39 @@ if br.available():
 else:
     check("browser thread test (skipped: playwright not installed)", True)
 
+# 10g. every listener survives the event stream. on_raw was added for the web UI,
+#      and the headless printer did not have it: `echo x | ./run.sh` died on the
+#      first event with AttributeError, and no test noticed.
+import loop as _loop                             # noqa: E402
+import main as _main                             # noqa: E402
+
+
+class _Bare:                                     # a listener from before on_raw existed
+    def __init__(self):
+        self.events = 0
+
+    def stop_requested(self):
+        return False
+
+    def on_status(self, state):
+        self.events += 1
+
+
+_lp = _loop.Loop.__new__(_loop.Loop)
+_lp.cfg = type("C", (), {"budget": {"tool_calls": 1}})()
+_bare = _Bare()
+_lp._ln = _bare
+try:
+    _lp._event({"type": "block_start", "block_type": "text"})
+    _survived = True
+except AttributeError:
+    _survived = False
+check("a listener without on_raw still works", _survived and _bare.events == 1)
+check("the headless printer answers the whole protocol",
+      all(hasattr(_main.Printer, m) for m in
+          ("on_raw", "on_thinking", "on_text", "on_tool_call", "on_tool_result",
+           "confirm", "on_status", "on_error", "stop_requested")))
+
 # 11. a keyless local endpoint is a valid setup: run.sh must not force setup on it
 import config as _config                          # noqa: E402
 

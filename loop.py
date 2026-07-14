@@ -152,8 +152,9 @@ class Loop:
         ln = self._ln
         if ln is None:
             return
-        ln.on_raw(ev)                # a listener that needs the call ids (the web UI
-                                     # pairs a result to its card) takes them here
+        raw = getattr(ln, "on_raw", None)   # optional: the terminal never needed the
+        if raw:                             # call ids, the web UI does, to pair a
+            raw(ev)                         # result with its card
         if ln.stop_requested():
             # KeyboardInterrupt, not a custom exception: it is the ONE abort path
             # shell.run already knows how to unwind cleanly — it lands the partial

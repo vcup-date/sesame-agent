@@ -1,8 +1,17 @@
 # sesame agent
 
-A lightweight, fast agent that runs in your terminal. It reads and edits files,
-runs shell commands, searches the web, drives a real browser, and shows its
-reasoning while it works.
+A lightweight, fast agent that runs in your terminal and in your browser. It reads
+and edits files, runs shell commands, searches the web, drives a real browser, and
+shows its reasoning while it works.
+
+**Using a coding agent?** Give it [SETUP.md](SETUP.md) and it will install,
+configure and launch this for you:
+
+```
+install https://github.com/vcup-date/sesame-agent by following its SETUP.md
+```
+
+Doing it yourself:
 
 ```bash
 git clone https://github.com/vcup-date/sesame-agent && cd sesame-agent
