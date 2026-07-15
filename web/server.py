@@ -28,6 +28,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import checkpoint                                  # noqa: E402
+import goals                                       # noqa: E402
 import models                                      # noqa: E402
 import project                                     # noqa: E402
 import providers                                   # noqa: E402
@@ -202,6 +203,19 @@ class Agent:
         self.title = None
         self.slots = slots_url(self.cfg.base_url)
         self.new_session()
+        threading.Thread(target=self._scheduler, daemon=True).start()
+
+    def _scheduler(self):
+        while True:
+            time.sleep(2)
+            if self.busy or self.pending or not self.loop.loop_job:
+                continue
+            if self.loop.loop_due(time.monotonic()):
+                j = self.loop.loop_job
+                j.fired(time.monotonic())
+                self.loop._save()
+                self.emit({"t": "notice", "text": f"loop #{j.count}: {j.prompt[:60]}"})
+                self.send(j.prompt)
 
     def _watch_prefill(self, done):
         """A local model spends the first seconds reading your context, saying
@@ -289,7 +303,44 @@ class Agent:
         return out
 
     # ── a turn ───────────────────────────────────────────────────────────────
+    def _slash(self, text):
+        """/goal and /loop from the web input, so the browser has them too."""
+        parts = text.split(None, 1)
+        cmd, arg = parts[0], (parts[1].strip() if len(parts) > 1 else "")
+        if cmd == "/goal":
+            if arg == "pause": self.loop.goal_pause(); return "goal paused"
+            if arg == "clear": self.loop.goal_clear(); return "goal cleared"
+            if arg == "resume":
+                if self.loop.goal_resume():
+                    nxt = self.loop.goal_next()
+                    if nxt: return ("__run__", nxt)
+                return "no paused goal"
+            if not arg:
+                g = self.loop.goal
+                return f"goal [{g.status}] turn {g.turns}: {g.objective}" if g else "no goal set"
+            self.loop.set_goal(arg)
+            return ("__run__", arg)
+        if cmd == "/loop":
+            if arg in ("stop", "clear", "off"): self.loop.loop_clear(); return "loop stopped"
+            if not arg:
+                j = self.loop.loop_job
+                return f"loop every {j.interval}s: {j.prompt}" if j else "no loop"
+            bits = arg.split(None, 1)
+            secs = goals.parse_interval(bits[0])
+            prompt = bits[1] if (secs and len(bits) > 1) else arg
+            self.loop.set_loop(secs or goals.DEFAULT_LOOP_SECONDS, prompt)
+            return ("__run__", prompt)
+        return None
+
     def send(self, text):
+        if text.startswith(("/goal", "/loop")):
+            r = self._slash(text)
+            if isinstance(r, tuple):              # a slash that kicks off a turn
+                text = r[1]
+            elif r is not None:
+                self.emit({"t": "notice", "text": r})
+                self.emit({"t": "config", **self.state()})
+                return {"ok": True}
         if self.pending:                          # the answer to a permission question
             return {"ok": False, "error": "waiting for you to allow or deny the last action"}
         if self.busy:
@@ -305,22 +356,39 @@ class Agent:
         threading.Thread(target=self._work, args=(text,), daemon=True).start()
         return {"ok": True, "queued": False}
 
+    def _run_with_steers(self, text):
+        self.loop.run(text, self.ln)
+        leftover = self.loop.pending_steer()
+        while leftover and not self.stop:
+            self.emit({"t": "notice", "text": "it finished before reading your message, "
+                                              "running it now"})
+            self.loop.run(leftover, self.ln)
+            leftover = self.loop.pending_steer()
+
     def _work(self, text):
         done = threading.Event()
         if self.slots:
             threading.Thread(target=self._watch_prefill, args=(done,), daemon=True).start()
         try:
-            self.loop.run(text, self.ln)
-            leftover = self.loop.pending_steer()
-            while leftover and not self.stop:
-                self.emit({"t": "notice", "text": "it finished before reading your message, "
-                                                  "running it now"})
-                self.loop.run(leftover, self.ln)
-                leftover = self.loop.pending_steer()
+            self._run_with_steers(text)
+            # goal: keep pursuing until goal_done, budget, pause, or stop
+            nxt = self.loop.goal_next()
+            while nxt and not self.stop:
+                self.emit({"t": "notice", "text": f"continuing toward the goal "
+                                                  f"(turn {self.loop.goal.turns})"})
+                self._run_with_steers(nxt)
+                nxt = self.loop.goal_next()
+            g = self.loop.goal
+            if g and not self.stop and g.status == "complete":
+                self.emit({"t": "notice", "text": f"goal complete: {g.summary}"})
+            elif g and not self.stop and g.status == "budget_limited":
+                self.emit({"t": "notice", "text": f"goal stopped after {g.turns} turns"})
         except Exception as exc:                  # noqa: BLE001 the UI must survive anything
             self.emit({"t": "error", "text": str(exc)})
         finally:
             done.set()
+            if self.loop.goal and self.stop and self.loop.goal.status == "active":
+                self.loop.goal_pause()
             self.busy = False
             self.emit({"t": "busy", "busy": False})
             self.emit({"t": "stats", **self.stats()})

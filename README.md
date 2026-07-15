@@ -175,7 +175,7 @@ writes a debug log with the API key redacted.
 ## Development
 
 ```bash
-python3 test/units.py        # 190 offline tests, no network
+python3 test/units.py        # 226 offline tests, no network
 python3 test/smoke.py        # against the live API
 python3 test/reasoning.py    # can it still see its own reasoning after a tool call
 ```
