@@ -440,11 +440,7 @@ $("undoBtn").onclick = async () => {
   const r = await api("/api/undo", {});
   if (!r.ok) render({ t: "notice", text: r.error || "nothing to undo" });
 };
-$("compactBtn").onclick = async () => {
-  const r = await api("/api/compact", {});
-  render({ t: "notice", text: r.ok ? `compacted ${tok(r.before)} to ${tok(r.after)} tokens`
-                                   : "nothing worth compacting yet" });
-};
+$("compactBtn").onclick = () => { api("/api/compact", {}); };  // progress arrives over SSE
 document.querySelectorAll(".chip").forEach((c) => {
   c.onclick = () => { input.value = c.dataset.q; grow(); send(); };
 });
