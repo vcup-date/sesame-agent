@@ -93,11 +93,15 @@ with tempfile.TemporaryDirectory() as td:
               danger.check_bash("echo x | tee existing.py") is not None)
         check("> /dev/null does not prompt",
               danger.check_bash("cmd > /dev/null 2>&1") is None)
-        # a write outside the project is a different kind of act
-        check("write outside the working directory prompts",
+        # location does not make a write dangerous; destroying content does
+        check("creating a new file out of bounds does NOT prompt",
+              danger.check("write", {"path": "/tmp/no-such-dir-xyz/brand_new.html"}) is None)
+        check("overwriting an existing file DOES prompt (wherever it is)",
               danger.check("write", {"path": "/etc/hosts"}) is not None)
-        check("write inside the working directory does not",
-              danger.check("write", {"path": "sub/new.txt"}) is None)
+        check("editing a file out of bounds does NOT prompt (undo covers it)",
+              danger.check("edit", {"path": "/tmp/no-such-dir-xyz/whatever.py"}) is None)
+        check("writing a sensitive file still prompts, even new",
+              danger.check("write", {"path": "/tmp/anything/.env"}) is not None)
     finally:
         os.chdir(old)
 
@@ -1156,6 +1160,18 @@ check("a local model gets a generous output budget, not 8k",
       _c.effective_max_tokens >= 100000)
 _c.base_url = "https://api.deepseek.com"          # remote: respects the set cap
 check("a remote model keeps its configured cap", _c.effective_max_tokens == 8192 + 4096 - 4096 or _c.effective_max_tokens == max(8192, 2000 + 4096))
+
+# 10l. write and edit share one "always allow" group: approving a write to a folder
+#      covers editing files there too, so you are not asked again mid-task.
+import project as _proj                           # noqa: E402
+_perms = {"tools": [], "prefixes": ["write:/work/game"]}
+check("an edit is covered by an always-write rule for the same place",
+      _proj.prefix_allowed(_perms, "edit", {"path": "/work/game/index.html"}))
+check("a write is covered by an always-edit rule for the same place",
+      _proj.prefix_allowed({"tools": [], "prefixes": ["edit:/work/game"]},
+                           "write", {"path": "/work/game/index.html"}))
+check("bash is NOT covered by a write rule",
+      not _proj.prefix_allowed(_perms, "bash", {"command": "rm -rf /"}))
 
 # 11. a keyless local endpoint is a valid setup: run.sh must not force setup on it
 import config as _config                          # noqa: E402
