@@ -32,6 +32,7 @@ from subagent import make_subagent_tool
 from team import Team, run_member
 import tools as toolsmod
 from tools import TOOLS
+from tasks import TaskList, make_task_tools
 import browser
 
 
@@ -85,11 +86,13 @@ class Loop:
         self.goal = None             # a durable objective the agent keeps pursuing
         self.loop_job = None         # a prompt re-run on an interval
         self.team = Team()           # named specialists that review the work between turns
+        self.tasks = TaskList()      # a live todo list the agent maintains (Claude-Code style)
         browser.STATE["headed"] = cfg.browser_headed
         log.configure(cfg.log_file)
         self.tools = (TOOLS + browser.TOOLS + make_memory_tools(self.memory)
                       + self._goal_tools()
                       + self._team_tools()
+                      + make_task_tools(self.tasks, on_change=self._tasks_changed)
                       + [make_subagent_tool(tools=TOOLS, api=self.cfg.api,
                                             budget=self.cfg.budget,
                                             on_event=self._sub_event)])
@@ -155,6 +158,22 @@ class Loop:
     def _sub_event(self, ev):
         if self._ln and ev.get("type") == "tool_use":
             self._ln.on_status(f"sub-agent: {ev['name']}")
+
+    def _tasks_changed(self, tasklist):
+        # A UI can paint a live todo panel via on_tasks; the terminal just gets a
+        # compact progress line. The `plan` tool result already prints the full list.
+        ln = self._ln
+        if ln is None:
+            return
+        done, total, current = tasklist.progress()
+        hook = getattr(ln, "on_tasks", None)
+        if hook:
+            hook([dict(i) for i in tasklist.items], done, total, current)
+        elif total:
+            head = f"plan {done}/{total}"
+            if current:
+                head += f" · {current}"
+            ln.on_status(head)
 
     def _event(self, ev):
         ln = self._ln
@@ -659,6 +678,8 @@ class Loop:
                     data["loop"] = self.loop_job.to_dict()
                 if self.team.members:
                     data["team"] = self.team.to_dict()
+                if self.tasks.items:
+                    data["tasks"] = self.tasks.to_dict()
                 self.session.stats(data)
             except OSError:
                 pass
@@ -681,6 +702,7 @@ class Loop:
         self.goal = goals.Goal.from_dict(st["goal"]) if st.get("goal") else None
         self.loop_job = goals.LoopJob.from_dict(st["loop"]) if st.get("loop") else None
         self.team = Team.from_dict(st["team"]) if st.get("team") else Team()
+        self.tasks = TaskList.from_dict(st["tasks"]) if st.get("tasks") else TaskList()
         if self.loop_job and self.loop_job.expired():   # a loop older than 7 days is not restored
             self.loop_job = None
         self.session = tx.Session(data["name"], self.cfg.model)
@@ -692,6 +714,7 @@ class Loop:
         self.goal = None
         self.loop_job = None
         self.team = Team()
+        self.tasks = TaskList()
         self.memory.clear_session()
         if self.session:
             try:
