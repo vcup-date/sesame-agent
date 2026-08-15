@@ -40,6 +40,7 @@ from prompt_toolkit.styles import Style
 import checkpoint
 import goals
 import models
+import shell
 import providers
 import team
 import transcript as tx
@@ -847,6 +848,12 @@ class Printer(Listener):
         self._p(f"{green('⏺')} {bold(LABEL.get(name, name))}({dim(arg_of(name, args))})")
         self.live.begin(f"running {LABEL.get(name, name).lower()}")
 
+    def on_tool_progress(self, name, chars):
+        # While a tool's arguments stream (a whole file's content), no text prints — show the tool
+        # and a growing count in the footer so a long write reads as "alive", not hung.
+        self._tick()
+        self.live.update(text=LABEL.get(name, name) or "writing", tokens=max(1, chars // 4))
+
     def on_tool_result(self, name, result):
         self.live.update(text="thinking")
         lines = result.splitlines() or ["(no output)"]
@@ -1112,9 +1119,12 @@ class App:
         def _(event):
             if self.pending:
                 self._answer_confirm("n")
-            elif self.busy:
+            elif self.busy and not self.stop:
+                # Once. The live footer shows "stopping" until the turn unwinds; pressing esc
+                # again does nothing (no "stopping stopping stopping" spam of printed lines).
                 self.stop = True
-                out(dim("stopping"))
+                self.spin.update(text="stopping")
+                shell.request_abort()   # close the in-flight request so a blocked read returns now
 
         return kb
 
@@ -1174,7 +1184,10 @@ class App:
                                   ("class:mark", "❯ ")])
 
         g, col, text, meta = self.spin.frame()
-        tail = f"({meta} · esc to stop)"
+        if self.stop:                     # esc pressed: one clear indicator, not a spam of lines
+            text, tail = "stopping", f"({meta} · interrupting, one moment…)"
+        else:
+            tail = f"({meta} · esc to stop)"
         head = text[:max(10, w - len(tail) - 6)]
         return FormattedText([
             ("", "\n"),                                  # blank above it
@@ -1192,10 +1205,15 @@ class App:
         w = self.cfg.context_window
         pct = (st.context_tokens / w * 100) if w else 0
         used = f"{tok(st.context_tokens)}/{tok(w)} ({pct:.0f}%)"
-        cost = f"${st.cost_usd:.4f}" if st.cost_usd >= 0.0001 else "$0"
+        # Generation (decode) speed instead of a dollar cost ($0 on local models). Just the one
+        # number that means something: tokens/s the model wrote, last turn, counted from the
+        # stream. (Prefill t/s is deliberately not shown — with server-side KV-cache reuse the
+        # reported prompt size ÷ time-to-first-token gives absurd values like "71704↑".)
+        speed = f"{st.last_gen_tps:.0f} tok/s" if st.last_gen_tps > 0 else ""
         name = f"{self.session_name} · " if self.session_name else ""
         prof = f"{self.cfg.profile} · " if self.cfg.profile else ""
-        info = f"{name}{prof}{self.cfg.model} · {used} · {cost} · turn {st.turns}"
+        info = (f"{name}{prof}{self.cfg.model} · {used}"
+                + (f" · {speed}" if speed else "") + f" · turn {st.turns}")
         g = self.loop.goal
         if g and g.status in ("active", "paused"):
             info += f"  ·  ⊙ goal[{g.status[:4]}] t{g.turns}"
@@ -1298,7 +1316,7 @@ class App:
                 if done:
                     out(done(result))
             except KeyboardInterrupt:
-                out(dim("stopped"))
+                out(dim("⊘ stopped"))
             except Exception as exc:
                 out(red(f"✖ {exc}"))
             finally:
@@ -1549,7 +1567,7 @@ class App:
             self._report_goal()
             self._team_review()          # the board reviews what was just done
         except KeyboardInterrupt:
-            out(dim("stopped"))
+            out(dim("⊘ stopped — type a new instruction to steer, or /exit"))
             if self.loop.goal and self.loop.goal.status == "active":
                 self.loop.goal_pause()
                 out(dim("goal paused · /goal resume to continue"))

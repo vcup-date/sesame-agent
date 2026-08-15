@@ -3,13 +3,12 @@
 .env
 
 # local model launchers: machine-specific paths, not part of the project
-run_35b.sh
-run_27b.sh
-run_hy3.sh
+run_*.sh
 
 # scratch: things the agent built while being tested
 flappy/
 tetris/
+web/*.html
 /*.png
 
 # working files

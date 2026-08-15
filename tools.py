@@ -296,6 +296,11 @@ LIST = {
 
 # ── bash ─────────────────────────────────────────────────────────────────────
 
+# The run loop points this at the UI's stop flag while a turn is live, so a long shell command
+# notices an esc/stop and dies promptly instead of blocking the whole turn until its timeout.
+SHOULD_STOP = lambda: False
+
+
 def _kill_group(proc):
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -325,6 +330,10 @@ def _bash(inp):
     seen = 0
     try:
         while proc.poll() is None:
+            if SHOULD_STOP():
+                _kill_group(proc)
+                out.close()
+                raise KeyboardInterrupt()   # esc: kill the command and unwind the turn
             if time.time() > deadline:
                 killed = f"timed out after {int(timeout)}s"
                 break

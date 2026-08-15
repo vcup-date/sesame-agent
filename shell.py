@@ -40,7 +40,37 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+import threading
+
 import log
+
+# ── interrupting an in-flight model request ──────────────────────────────────────────────────
+# A stop (esc) is normally noticed between streamed tokens, but a long *silent* prefill blocks in
+# a socket read with nothing to notice, so esc did nothing for seconds. request_abort() closes the
+# live response from the key thread; the blocked read returns at once and the stream unwinds as a
+# clean interrupt (the _ABORT flag distinguishes "closed by esc" from a real network error).
+_active_lock = threading.Lock()
+_active_conn = None
+_ABORT = threading.Event()
+
+def _set_active(res):
+    global _active_conn
+    with _active_lock:
+        _active_conn = res
+
+def request_abort():
+    """esc: mark abort and close any in-flight model request so a blocked read returns now."""
+    _ABORT.set()
+    with _active_lock:
+        r = _active_conn
+    if r is not None:
+        try:
+            r.close()
+        except Exception:
+            pass
+
+def clear_abort():
+    _ABORT.clear()
 
 MAX_TOOL_RESULT_CHARS = 40_000
 RETRY_ON = {408, 409, 425, 429, 500, 502, 503, 504, 529}
@@ -71,7 +101,9 @@ def run(*, transcript, system, tools, budget, safety, on_event, journal, api,
     journal    — (message) -> None, called with each wire message
     api        — {"base_url", "api_key", "model", "max_tokens"}
     """
-    spent = {"tool_calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+    clear_abort()   # fresh turn: forget any earlier esc
+    spent = {"tool_calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+             "prefill_s": 0.0, "gen_s": 0.0, "gen_toks": 0}
     emit = on_event or (lambda ev: None)
     jot = journal or (lambda msg: None)
     stalled = 0
@@ -98,6 +130,10 @@ def run(*, transcript, system, tools, budget, safety, on_event, journal, api,
         spent["input_tokens"] += msg["usage"].get("input_tokens", 0)
         spent["output_tokens"] += msg["usage"].get("output_tokens", 0)
         spent["cache_read_tokens"] += msg["usage"].get("cache_read_input_tokens", 0)
+        tm = msg.get("timing") or {}          # roll each call's prefill/decode time into the turn
+        spent["prefill_s"] += tm.get("prefill_s", 0.0)
+        spent["gen_s"] += tm.get("gen_s", 0.0)
+        spent["gen_toks"] += msg.get("gen_toks", 0)   # counted decode tokens (usage-free fallback)
         assistant = {"role": "assistant", "content": msg["content"]}
         transcript.append(assistant)
         jot(assistant)
@@ -169,12 +205,14 @@ def run(*, transcript, system, tools, budget, safety, on_event, journal, api,
         runnable = [e for e in plan if e[2] is None]
         parallel = [e for e in runnable if e[1].get("read_only")]
         outcomes = {}
+        emit({"type": "tick"})   # stop-check before any tool runs (esc pressed after generation)
         if len(parallel) > 1:
             with ThreadPoolExecutor(max_workers=min(8, len(parallel))) as pool:
                 for entry, res in zip(parallel, pool.map(execute, parallel)):
                     outcomes[entry[0]["id"]] = res
         for entry in plan:  # everything else, in the order the model asked for it
             if entry[0]["id"] not in outcomes:
+                emit({"type": "tick"})   # stop-check between tools, so esc lands at each boundary
                 outcomes[entry[0]["id"]] = execute(entry)
 
         results = []
@@ -352,6 +390,14 @@ def to_openai(system, messages, echo_reasoning=True):
     return out
 
 
+def _timing(t0, t_first, t_end):
+    """Split a stream into prefill (request → first token) and generation (first → last),
+    in seconds. The caller turns these into prompt-tokens/s and output-tokens/s."""
+    if not t_first:
+        return {"prefill_s": 0.0, "gen_s": 0.0}
+    return {"prefill_s": max(0.0, t_first - t0), "gen_s": max(0.0, t_end - t_first)}
+
+
 def _stream(*, transcript, system, tools, api, budget, emit):
     """One wire round. Speaks either the Anthropic Messages wire (with
     interleaved thinking) or the OpenAI chat wire, and returns the same shape."""
@@ -405,6 +451,8 @@ def _stream(*, transcript, system, tools, api, budget, emit):
 
     blocks, partial_json, truncated = {}, {}, []
     message_id, stop_reason, usage = "", None, {}
+    t0, t_first = time.perf_counter(), None   # prefill = request → first token; then generation
+    gen_toks = 0                              # counted decode tokens (fallback when no usage)
 
     def completed():
         done = []
@@ -423,9 +471,13 @@ def _stream(*, transcript, system, tools, api, budget, emit):
 
     try:
         with urllib.request.urlopen(req, timeout=600) as res:
+            _set_active(res)
             for raw in res:
+                if _ABORT.is_set():
+                    raise KeyboardInterrupt()   # esc closed the connection
                 line = raw.decode("utf-8", "replace").strip()
                 if not line.startswith("data: "):
+                    emit({"type": "tick"})   # blank/keepalive line: still let esc fire
                     continue
                 data = line[6:]
                 if data == "[DONE]":
@@ -442,17 +494,24 @@ def _stream(*, transcript, system, tools, api, budget, emit):
                         partial_json[i] = ""
                     emit({"type": "block_start", "block_type": blocks[i]["type"]})
                 elif etype == "content_block_delta":
+                    if t_first is None:
+                        t_first = time.perf_counter()   # first output token ends prefill
                     i, d = ev["index"], ev["delta"]
                     b = blocks[i]
                     if d["type"] == "thinking_delta":
+                        gen_toks += 1
                         b["thinking"] = b.get("thinking", "") + d["thinking"]
                         emit({"type": "thinking", "text": d["thinking"]})
                     elif d["type"] == "text_delta":
+                        gen_toks += 1
                         b["text"] = b.get("text", "") + d["text"]
                         emit({"type": "text", "text": d["text"]})
                     elif d["type"] == "input_json_delta":
                         partial_json[i] += d["partial_json"]
-                        emit({"type": "tick"})   # so esc can interrupt a long write
+                        # A big tool arg (writing a whole file) emits no text — show a live,
+                        # growing size so the user sees it working (and esc still gets checked).
+                        emit({"type": "tool_progress", "name": b.get("name", ""),
+                              "chars": len(partial_json[i])})
                     elif d["type"] == "signature_delta":
                         b["signature"] = b.get("signature", "") + d["signature"]
                     elif d["type"] == "redacted_thinking_delta":
@@ -489,6 +548,14 @@ def _stream(*, transcript, system, tools, api, budget, emit):
         # hand completed blocks to run() so an aborted trajectory still lands in the transcript
         exc.partial = completed()
         raise
+    except Exception:
+        if _ABORT.is_set():                     # esc closed the socket mid-read: any resulting
+            ki = KeyboardInterrupt(); ki.partial = completed(); raise ki   # error is a clean abort
+        raise
+    finally:
+        _set_active(None)
+    if _ABORT.is_set():                         # close returned EOF (no error): unwind now
+        ki = KeyboardInterrupt(); ki.partial = completed(); raise ki
 
     # DeepSeek signs thinking blocks with the message id; backfill if the stream omitted it
     for b in blocks.values():
@@ -503,6 +570,8 @@ def _stream(*, transcript, system, tools, api, budget, emit):
         "stop_reason": stop_reason,
         "usage": usage,
         "truncated": truncated,
+        "gen_toks": gen_toks,
+        "timing": _timing(t0, t_first, time.perf_counter()),
     }
 
 
@@ -560,6 +629,8 @@ def _openai_request(*, transcript, system, tools, api, budget, emit, echo_reason
     text, thinking, calls = "", "", {}
     stop_reason, usage, msg_id = None, {}, ""
     started = {"thinking": False, "text": False}
+    t0, t_first = time.perf_counter(), None   # prefill = request → first token; then generation
+    gen_toks = 0                              # counted decode tokens (fallback when no usage)
 
     def completed():
         out = []
@@ -571,9 +642,13 @@ def _openai_request(*, transcript, system, tools, api, budget, emit, echo_reason
 
     try:
         with urllib.request.urlopen(req, timeout=600) as res:
+            _set_active(res)
             for raw in res:
+                if _ABORT.is_set():
+                    raise KeyboardInterrupt()   # esc closed the connection
                 line = raw.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):
+                    emit({"type": "tick"})   # blank/keepalive line: still let esc fire
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
@@ -591,25 +666,24 @@ def _openai_request(*, transcript, system, tools, api, budget, emit, echo_reason
                     continue
                 choice = choices[0]
                 delta = choice.get("delta") or {}
+                if t_first is None and (delta.get("content") or delta.get("reasoning_content")
+                                        or delta.get("reasoning") or delta.get("tool_calls")):
+                    t_first = time.perf_counter()   # first output token ends prefill
                 rc = delta.get("reasoning_content") or delta.get("reasoning")
                 if rc:
+                    gen_toks += 1
                     if not started["thinking"]:
                         started["thinking"] = True
                         emit({"type": "block_start", "block_type": "thinking"})
                     thinking += rc
                     emit({"type": "thinking", "text": rc})
                 if delta.get("content"):
+                    gen_toks += 1
                     if not started["text"]:
                         started["text"] = True
                         emit({"type": "block_start", "block_type": "text"})
                     text += delta["content"]
                     emit({"type": "text", "text": delta["content"]})
-                if delta.get("tool_calls"):
-                    # A big tool call (writing a whole file) streams as argument
-                    # deltas and emits nothing, so the stop flag, which is only read
-                    # inside emit(), was never checked: esc could not interrupt a long
-                    # write. Tick once per chunk so the stop check runs.
-                    emit({"type": "tick"})
                 for tcd in delta.get("tool_calls") or []:
                     i = tcd.get("index", 0)
                     slot = calls.setdefault(i, {"id": None, "name": "", "arguments": ""})
@@ -618,6 +692,13 @@ def _openai_request(*, transcript, system, tools, api, budget, emit, echo_reason
                     fn = tcd.get("function") or {}
                     slot["name"] += fn.get("name") or ""
                     slot["arguments"] += fn.get("arguments") or ""
+                if delta.get("tool_calls") and calls:
+                    # A big tool arg (writing a whole file) streams as argument deltas and emits
+                    # no text — show a live, growing size so the user sees it working (and so the
+                    # stop flag, only read inside emit(), still gets checked for esc).
+                    act = calls[max(calls)]
+                    emit({"type": "tool_progress", "name": act.get("name", ""),
+                          "chars": sum(len(s["arguments"]) for s in calls.values())})
                 if choice.get("finish_reason"):
                     fr = choice["finish_reason"]
                     stop_reason = ("tool_use" if fr == "tool_calls"
@@ -634,6 +715,14 @@ def _openai_request(*, transcript, system, tools, api, budget, emit, echo_reason
     except KeyboardInterrupt as exc:
         exc.partial = completed()
         raise
+    except Exception:
+        if _ABORT.is_set():                     # esc closed the socket mid-read: any resulting
+            ki = KeyboardInterrupt(); ki.partial = completed(); raise ki   # error is a clean abort
+        raise
+    finally:
+        _set_active(None)
+    if _ABORT.is_set():                         # close returned EOF (no error): unwind now
+        ki = KeyboardInterrupt(); ki.partial = completed(); raise ki
 
     content, truncated = completed(), []
     for i in sorted(calls):
@@ -649,4 +738,5 @@ def _openai_request(*, transcript, system, tools, api, budget, emit, echo_reason
 
     log.write("response", f"stop={stop_reason} usage={usage}")
     return {"id": msg_id, "content": content, "stop_reason": stop_reason,
-            "usage": usage, "truncated": truncated}
+            "usage": usage, "truncated": truncated, "gen_toks": gen_toks,
+            "timing": _timing(t0, t_first, time.perf_counter())}

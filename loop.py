@@ -63,6 +63,8 @@ class Stats:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     output_tokens: int = 0
+    last_prefill_tps: float = 0.0   # prompt tokens/s (last turn) — how fast the model read the prompt
+    last_gen_tps: float = 0.0       # output tokens/s (last turn) — decode speed
 
 
 class Stop(Exception):
@@ -203,6 +205,10 @@ class Loop:
             self._flush(ln)
             ln.on_tool_call(ev["name"], ev["input"])
             ln.on_status(f"running {ev['name']}")
+        elif t == "tool_progress":            # live size while a big tool arg (file write) streams
+            fn = getattr(ln, "on_tool_progress", None)
+            if fn:
+                fn(ev.get("name", ""), ev.get("chars", 0))
         elif t == "tool_result":
             ln.on_tool_result(ev["name"], ev["content"])
         elif t == "retry":
@@ -271,6 +277,7 @@ class Loop:
     # ── the turn ─────────────────────────────────────────────────────────────
     def run(self, text, ln):
         self._ln = ln
+        toolsmod.SHOULD_STOP = ln.stop_requested   # let long shell commands notice esc
         self.messages.append({"role": "user", "content": text})
         self.messages[:] = validate_and_repair(self.messages)
         self.stats.turns += 1
@@ -311,6 +318,7 @@ class Loop:
             ln.on_status("error")
         finally:
             self._ln = None
+            toolsmod.SHOULD_STOP = lambda: False
             self._save()
 
     def _context(self):
@@ -343,6 +351,16 @@ class Loop:
         for k in ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens"):
             setattr(self.stats, k, getattr(self.stats, k) + spent.get(k, 0))
         self.stats.cost_usd += models.cost(self.cfg.model, spent)
+        # This turn's prefill/decode speed (tokens/s), for the footer. Decode is counted from the
+        # stream itself so it works even on local servers that send no token usage. Prefill needs a
+        # real prompt-token count (KV-cache reuse means "context size" ≠ tokens actually prefilled),
+        # so it only shows when the server reports usage; otherwise it stays 0 and the footer hides
+        # it. Last-turn, not an average, so the reading reflects current conditions.
+        ps, gs = spent.get("prefill_s", 0.0), spent.get("gen_s", 0.0)
+        prompt = spent.get("input_tokens", 0) + spent.get("cache_read_tokens", 0)
+        out = spent.get("output_tokens", 0) or spent.get("gen_toks", 0)
+        self.stats.last_prefill_tps = (prompt / ps) if (ps > 0 and prompt > 0) else 0.0
+        self.stats.last_gen_tps = (out / gs) if (gs > 0 and out > 0) else 0.0
         self.stats.context_tokens = ctx.estimate_tokens(self.messages, self.system())
 
     # ── goal: a durable objective the agent keeps pursuing across turns ──────
