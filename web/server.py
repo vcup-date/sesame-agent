@@ -34,6 +34,7 @@ import project                                     # noqa: E402
 import providers                                   # noqa: E402
 import team                                        # noqa: E402
 import transcript as tx                            # noqa: E402
+import shell                                       # noqa: E402
 from config import Config                          # noqa: E402
 from loop import Listener, Loop                    # noqa: E402
 
@@ -109,6 +110,11 @@ class WebListener(Listener):
         elif t == "tool_result":
             self.a.emit({"t": "tool_result", "call": ev.get("id"), "name": ev["name"],
                          "content": ev.get("content", "")})
+        elif t == "tool_progress":
+            # a big tool arg (writing a whole file) streams no text — a live size so it reads alive
+            self.a.emit({"t": "tool_progress", "name": ev.get("name", ""),
+                         "label": LABEL.get(ev.get("name", ""), ev.get("name", "")),
+                         "chars": ev.get("chars", 0)})
 
     def _flush_reasoning(self):
         if self.think.strip():
@@ -517,7 +523,8 @@ class Agent:
         st = self.loop.stats
         return {"tokens": st.context_tokens, "window": self.cfg.context_window,
                 "cost": round(st.cost_usd, 4), "turns": st.turns,
-                "input": st.input_tokens, "output": st.output_tokens}
+                "input": st.input_tokens, "output": st.output_tokens,
+                "genTps": round(st.last_gen_tps)}   # generation speed, tokens/s (last turn)
 
     def state(self):
         c = self.cfg
@@ -606,6 +613,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(AGENT.send(text))
         if u.path == "/api/stop":
             AGENT.stop = True
+            shell.request_abort()   # close the in-flight request so a blocked read returns now
             AGENT.emit({"t": "status", "text": "stopping"})
             return self._json({"ok": True})
         if u.path == "/api/approve":

@@ -326,6 +326,17 @@ function render(ev) {
     case "tool_result": toolDone(ev); break;
     case "approval": askCard(ev); break;
 
+    // a big tool argument (writing a whole file) streams no text — show a growing
+    // size so a long write reads as alive, not hung.
+    case "tool_progress": {
+      $("prefill").classList.add("hidden");
+      if (!state.streamStart) state.streamStart = performance.now();
+      $("statusText").textContent = `${ev.label || "writing"} · ${tok(ev.chars)} chars`;
+      const secs = (performance.now() - state.streamStart) / 1000;
+      if (secs > 0.5) $("rate").textContent = `${((ev.chars / 4) / secs).toFixed(0)} tok/s`;
+      break;
+    }
+
     case "status":
       $("statusText").textContent = ev.text;
       break;
@@ -419,7 +430,9 @@ function setStats(s) {
   const pct = s.window ? Math.min(100, (s.tokens / s.window) * 100) : 0;
   $("ctxFill").style.width = pct + "%";
   $("ctxText").textContent = `${tok(s.tokens || 0)}/${tok(s.window || 0)}`;
-  $("costText").textContent = s.cost ? `$${s.cost.toFixed(4)}` : "$0";
+  // Generation speed in place of the useless $0 on local models; real cost still wins when priced.
+  $("costText").textContent = s.cost ? `$${s.cost.toFixed(4)}`
+                                     : (s.genTps ? `${s.genTps} tok/s` : "");
 }
 
 /* ── send ───────────────────────────────────────────────────────────────── */
