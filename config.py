@@ -95,8 +95,19 @@ class Config:
         }
 
     @property
+    def effective_tool_budget(self):
+        # The default (50) is tuned so a runaway loop cannot torch a paid API
+        # bill. A local model is free and fast, and a real build-and-test task
+        # (write file -> run -> fix -> run again) blows past 50 easily, so give
+        # local endpoints a much roomier ceiling — still a runaway safety net.
+        base = self.tool_call_budget
+        if providers.is_local(self.base_url):
+            base = max(base, 500)
+        return base
+
+    @property
     def budget(self):
-        return {"tool_calls": self.tool_call_budget,
+        return {"tool_calls": self.effective_tool_budget,
                 "thinking_tokens": self.thinking_budget,
                 "effort": self.reasoning_effort,
                 "grace": 2}
