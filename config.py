@@ -308,11 +308,17 @@ class Config:
         return True
 
     def set_effort(self, level):
-        levels = {"low": 2000, "medium": 4000, "high": 8000, "max": 16000}
+        levels = {"none": 0, "low": 2000, "medium": 4000, "high": 8000, "max": 16000}
         if level not in levels:
             return False
         self.reasoning_effort = level
         self.thinking_budget = levels[level]
+        if level == "none":
+            self.thinking_mode = "none"           # off: the model does not reason at all
+        elif self.thinking_mode == "none":
+            # turning reasoning back on: restore the model's native thinking contract
+            native = models.spec(self.model)["thinking"]
+            self.thinking_mode = "budget" if native == "none" else native
         return True
 
     def validate(self):

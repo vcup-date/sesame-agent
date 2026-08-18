@@ -63,6 +63,20 @@ def red(s): return _c("31", s)
 def magenta(s): return _c("35", s)
 
 
+def diff_line(ln, w):
+    """Colour one unified-diff row: a green bar for an addition, a red bar for a
+    removal, cyan for the @@ hunk header, dim for context. The +/- rows are padded
+    to the width so the background fills the whole row, like a real diff view."""
+    text = ln[:w]
+    if ln.startswith("+") and not ln.startswith("+++"):
+        return _c("48;5;22", _c("38;5;151", text.ljust(w)))    # green bg, light-green fg
+    if ln.startswith("-") and not ln.startswith("---"):
+        return _c("48;5;52", _c("38;5;210", text.ljust(w)))    # red bg, light-red fg
+    if ln.startswith("@@"):
+        return cyan(text)
+    return dim(text)
+
+
 # Each team member gets a stable colour from its name, so John is the same hue
 # every time he speaks — in the roster, in a review, in a report.
 _MEMBER_COLORS = ["38;5;39", "38;5;208", "38;5;141", "38;5;78", "38;5;213",
@@ -393,6 +407,7 @@ def gradient_track(width, i, spark=True):
 
 
 LEVEL_STYLE = [
+    ("#5f5f5f", "flat"),      # none    off, dimmest and still
     ("#8a8a8a", "flat"),      # low     grey, still
     ("#5fd787", "glow"),      # medium  one colour, breathing gently
     ("#ffaf5f", "comet"),     # high    warm, with a comet running through it
@@ -677,6 +692,21 @@ def effort_slider(levels, current):
     return run_dialog(app)
 
 
+# A rotating gerund for the spinner while it works, so a long turn reads as alive
+# rather than hung. Cycled by elapsed time (see Spin.frame), never faster than the
+# eye can read. Add your own — the sillier the better.
+WORKING_WORDS = [
+    "Thinking", "Cooking", "Unfurling", "Deliberating", "Dilly-dallying", "Percolating",
+    "Ruminating", "Noodling", "Simmering", "Marinating", "Conjuring", "Brewing",
+    "Pondering", "Musing", "Mulling", "Cogitating", "Scheming", "Wrangling", "Finagling",
+    "Tinkering", "Puzzling", "Divining", "Incubating", "Hatching", "Germinating",
+    "Crunching", "Whirring", "Churning", "Synthesizing", "Reticulating", "Vibing",
+    "Spelunking", "Meandering", "Moseying", "Puttering", "Sussing", "Manifesting",
+    "Transmuting", "Concocting", "Whittling", "Untangling", "Stewing", "Frolicking",
+    "Wandering", "Contemplating", "Beavering", "Bamboozling", "Discombobulating",
+]
+
+
 class Spin:
     """Spinner state for the toolbar. prompt_toolkit draws it; we just supply
     the glyph, the activity, and the clock. Fighting the terminal with raw ANSI
@@ -717,7 +747,15 @@ class Spin:
         meta = clock
         if self.tokens:
             meta += f" · ↓ {tok(self.tokens)} tokens"
-        return g, col, (self.text or "working"), meta
+        # Generic "thinking/working" turns into a rotating gerund; a specific
+        # activity (running bash, writing a file) is shown verbatim.
+        generic = self.text in ("", "thinking", "working")
+        if generic:
+            idx = (int(self.start) + secs // 4) % len(WORKING_WORDS)
+            label = WORKING_WORDS[idx] + "…"
+        else:
+            label = self.text
+        return g, col, label, meta, generic
 
     def shimmer(self, text):
         return shimmer_frags(text, self.i)
@@ -734,6 +772,7 @@ class Printer(Listener):
         self.at_start = True
         self.answer = ""
         self.last_answer = ""
+        self.gen_chars = 0           # generated chars this turn (thinking + answer) → footer token count
         self.blank = True
         self.md = Markdown(self._render)
         self.live = app.spin
@@ -770,13 +809,16 @@ class Printer(Listener):
             self.think_start = time.monotonic()
             self.live.begin("thinking")
         self.think_buf += delta
-        if self.app.show_thinking:
+        self.gen_chars += len(delta)
+        self.live.update(tokens=max(1, self.gen_chars // 4))
+        if self.app.think_mode == "full":
             sys.stdout.write(dim(delta))
             sys.stdout.flush()
             return
-        last = [unmark(l) for l in self.think_buf.splitlines() if unmark(l)]
-        self.live.update(text=last[-1] if last else "thinking",
-                         tokens=max(1, len(self.think_buf) // 4))
+        # off / peek: keep the footer clock + token count moving so a long think
+        # reads as alive. In peek mode a small fixed frame of the live reasoning
+        # tail is drawn above the prompt (see _prompt_text / _peek_lines).
+        self.live.update(text="thinking")
 
     def on_thinking_done(self):
         if not self.think_buf:
@@ -800,6 +842,11 @@ class Printer(Listener):
             self._gap()
             self.first_text = False
         self.answer += delta
+        # keep the footer token count climbing while the answer streams (with
+        # reasoning off there is no thinking phase to count, so this is the only
+        # place output tokens show up as "alive").
+        self.gen_chars += len(delta)
+        self.live.update(tokens=max(1, self.gen_chars // 4))
         parts = delta.split("\n")
         for part in parts[:-1]:
             self.line_buf += part
@@ -857,11 +904,15 @@ class Printer(Listener):
     def on_tool_result(self, name, result):
         self.live.update(text="thinking")
         lines = result.splitlines() or ["(no output)"]
-        for i, ln in enumerate(lines[:6]):
+        is_diff = name in ("edit", "write")   # these return a unified diff
+        cap = 20 if is_diff else 6            # a diff is the point: show more of it
+        w = cols() - 8
+        for i, ln in enumerate(lines[:cap]):
             prefix = f"  {dim('⎿')}  " if i == 0 else "     "
-            self._p(prefix + dim(ln[:cols() - 8]))
-        if len(lines) > 6:
-            self._p(dim(f"     … +{len(lines) - 6} more lines"))
+            body = diff_line(ln, w) if is_diff else dim(ln[:w])
+            self._p(prefix + body)
+        if len(lines) > cap:
+            self._p(dim(f"     … +{len(lines) - cap} more lines"))
 
     def confirm(self, reason, name, args):
         """Runs on the WORKER thread. It must not read stdin: the main thread is
@@ -925,10 +976,10 @@ def paste_label(pid, text):
 
 
 COMPACT_HINT_AT = 0.85       # nudge to /compact once context passes this
-DIALOG_COMMANDS = {"/model", "/provider", "/resume", "/effort"}  # open a picker; not loopable
+DIALOG_COMMANDS = {"/model", "/provider", "/resume", "/delete", "/effort"}  # open a picker; not loopable
 
 COMMANDS = ["/help", "/goal", "/loop", "/team", "/model", "/provider", "/tools", "/undo", "/compact",
-            "/effort", "/think", "/save", "/resume", "/sessions", "/memory", "/permissions",
+            "/effort", "/think", "/save", "/resume", "/sessions", "/delete", "/memory", "/permissions",
             "/confirm", "/init", "/copy", "/clear", "/quit"]
 
 HELP_ROWS = [
@@ -940,11 +991,12 @@ HELP_ROWS = [
     ("/tools", "what it can do"),
     ("/undo [n]", "revert files it edited"),
     ("/compact", "free up context"),
-    ("/effort <l>", "low | medium | high | max"),
-    ("/think", "show or hide the full reasoning"),
+    ("/effort <l>", "none | low | medium | high | max"),
+    ("/think", "reasoning view: off | peek | full  (ctrl-t cycles)"),
     ("/save [name]", "name this session"),
     ("/resume", "pick up an earlier session"),
     ("/sessions", "list them"),
+    ("/delete", "delete a saved session  (picks from a list, asks first)"),
     ("/memory", "what it remembers"),
     ("/permissions", "what it may do unasked  (/permissions reset)"),
     ("/confirm on|off", "prompts before dangerous actions"),
@@ -991,7 +1043,12 @@ class App:
         self._out_lock = threading.Lock()   # so parallel team members don't interleave their reports
         self._carry = ""             # text you had typed when the prompt restarted
         self.printer = Printer(self)
-        self.show_thinking = cfg._raw.get("showThinking", False)
+        # reasoning display: "off" (hidden), "peek" (a small live frame so a long
+        # think never looks stopped), or "full" (streamed inline). Migrate the old
+        # boolean showThinking; default to peek.
+        self.think_mode = cfg._raw.get("thinkMode") or ("full" if cfg._raw.get("showThinking") else "peek")
+        if self.think_mode not in ("off", "peek", "full"):
+            self.think_mode = "peek"
         self._compact_hinted = False
         self.session_name = None
         self.pastes = {}             # id -> the text you pasted
@@ -1008,13 +1065,25 @@ class App:
         else:
             self.loop.open(f"chat-{time.strftime('%m%d-%H%M%S')}")
 
+    @property
+    def show_thinking(self):
+        """Back-compat read for the inline-stream path and the replay."""
+        return self.think_mode == "full"
+
+    def _cycle_think(self):
+        order = ["off", "peek", "full"]
+        self.think_mode = order[(order.index(self.think_mode) + 1) % len(order)]
+        blurb = {"off": "hidden", "peek": "small live frame", "full": "shown inline"}
+        out(dim(f"thinking: {self.think_mode} ({blurb[self.think_mode]})"))
+        if self.busy:
+            self._redraw(full=True)      # peek reserves rows: reflow the running prompt
+
     def _keys(self):
         kb = KeyBindings()
 
         @kb.add("c-t")
         def _(event):
-            self.show_thinking = not self.show_thinking
-            out(dim(f"reasoning {'shown' if self.show_thinking else 'collapsed'}"))
+            self._cycle_think()
 
         @kb.add("c-y")
         def _(event):
@@ -1183,21 +1252,50 @@ class App:
             return FormattedText([("class:rule", "─" * w + "\n"),
                                   ("class:mark", "❯ ")])
 
-        g, col, text, meta = self.spin.frame()
+        g, col, text, meta, generic = self.spin.frame()
         if self.stop:                     # esc pressed: one clear indicator, not a spam of lines
             text, tail = "stopping", f"({meta} · interrupting, one moment…)"
         else:
+            if generic and self.cfg.reasoning_effort not in ("", "none"):
+                meta += f" · thinking with {self.cfg.reasoning_effort} effort"
             tail = f"({meta} · esc to stop)"
         head = text[:max(10, w - len(tail) - 6)]
-        return FormattedText([
+        frags = [
             ("", "\n"),                                  # blank above it
             (f"fg:{col} bold", f"{g} "),
             ("class:think", f"{head} "),
             ("class:dim", f"{tail}"),
-            ("", "\n\n"),
+        ]
+        if self.think_mode == "peek":
+            # one live line of the reasoning tail, IN PLACE OF the blank row that
+            # already sits below the spinner — so the working prompt stays exactly
+            # the height it always was (blank, spinner, line, rule, input). Adding
+            # rows here is what stranded blank lines under ❯ when a turn ended.
+            frags.append(("class:dim", "\n  " + self._peek_lines(1, w)[0]))
+            frags.append(("", "\n"))
+        else:
+            frags.append(("", "\n\n"))
+        frags += [
             ("class:rule", "─" * w + "\n"),
             ("class:mark", "❯ "),
-        ])
+        ]
+        return FormattedText(frags)
+
+    def _peek_lines(self, n, w):
+        """The last n lines of the in-flight reasoning for the peek frame. A long
+        streaming line is shown as its tail so it scrolls rather than sitting on a
+        static start. Always returns exactly n strings (blank-padded) so the frame
+        keeps a constant height."""
+        rows = []
+        buf = self.printer.think_buf
+        if buf:
+            lines = [unmark(l) for l in buf.splitlines()]
+            lines = [l for l in lines if l.strip()]
+            for l in lines[-n:]:
+                rows.append(l[-(w - 4):] if len(l) > w - 4 else l)
+        while len(rows) < n:
+            rows.append("")
+        return rows[-n:]
 
     def _toolbar(self):
         """What sits below the input: the rule and the static status."""
@@ -1297,6 +1395,7 @@ class App:
     # ── one turn, in the background: the prompt stays at the bottom ──────────
     def turn(self, text):
         self.printer.blank = False       # so the first block gets a gap after ❯
+        self.printer.gen_chars = 0       # fresh token count for this turn's footer
         self.busy, self.stop = True, False
         self.spin.begin("working")
         self._redraw(full=True)          # the prompt grows: reflow
@@ -1784,8 +1883,16 @@ class App:
         elif cmd == "/effort":
             self._pick_effort(arg.strip().lower())
         elif cmd == "/think":
-            self.show_thinking = not self.show_thinking
-            out(dim(f"reasoning {'shown' if self.show_thinking else 'collapsed'}"))
+            a = arg.strip().lower()
+            if a in ("off", "peek", "full"):
+                self.think_mode = a
+                out(dim(f"thinking: {a}"))
+                if self.busy:
+                    self._redraw(full=True)
+            elif a in ("", "toggle", "cycle"):
+                self._cycle_think()
+            else:
+                out(dim("thinking: off | peek | full  (or /think to cycle)"))
         elif cmd == "/save":
             name = arg or self.session_name or "session"
             p = self.loop.save_as(name)
@@ -1793,6 +1900,8 @@ class App:
             out(dim(f"saved as {name} ({p})"))
         elif cmd == "/resume":
             self._resume(arg or None)
+        elif cmd == "/delete":
+            self._delete_session(arg or None)
         elif cmd == "/sessions":
             rows = tx.list_sessions()
             if not rows:
@@ -1984,6 +2093,7 @@ class App:
             out(green("  connection works"))
 
     LEVELS = [
+        ("none", 0, "off — no reasoning, straight to the answer"),
         ("low", 2000, "fastest, least thinking"),
         ("medium", 4000, "balanced"),
         ("high", 8000, "thinks harder on tricky work"),
@@ -1996,7 +2106,7 @@ class App:
                 out(dim(f"effort {self.cfg.reasoning_effort} "
                         f"({self.cfg.thinking_budget} thinking tokens)"))
             else:
-                out(dim("effort: low | medium | high | max"))
+                out(dim("effort: none | low | medium | high | max"))
             return
         choice = effort_slider(self.LEVELS, self.cfg.reasoning_effort)
         if choice is None:
@@ -2070,6 +2180,42 @@ class App:
         self.session_name = name
         out(dim(f"resumed {name}, {self.loop.stats.turns} turns"))
         self._replay()
+
+    def _delete_session(self, name=None):
+        """Pick a saved session from the same list /resume shows and delete its
+        file. Destructive and unrecoverable, so it always confirms first, and it
+        refuses the session you are currently in (deleting it would only have it
+        re-created on your next message)."""
+        rows = sorted(tx.list_sessions(), key=lambda r: r["updated"], reverse=True)
+        if not rows:
+            out(dim("no sessions yet"))
+            return
+        if not name:
+            opts = []
+            for r in rows:
+                when = time.strftime("%m-%d %H:%M", time.localtime(r["updated"]))
+                title = self._title_of(r)
+                opts.append((f"{title:<48} {when} · {r['turns']} turn"
+                             f"{'' if r['turns'] == 1 else 's'}"
+                             + (f" · ${r['cost']:.3f}" if r["cost"] else ""), r["name"]))
+            name = select("delete a session", opts)
+            if not name:
+                out(dim("cancelled"))
+                return
+        row = next((r for r in rows if r["name"] == name), None)
+        if not row:
+            out(dim(f"no session called {name}"))
+            return
+        if name == getattr(self.loop, "_session_name", None):
+            out(dim("that is the session you are in now — /clear to a new one first, then delete it"))
+            return
+        title = self._title_of(row)
+        safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        ans = self.ask(f"  delete <b>{safe}</b>?  this cannot be undone  (y/N) ")
+        if (ans or "").strip().lower() not in ("y", "yes"):
+            out(dim("cancelled"))
+            return
+        out(dim(f"deleted {name}") if tx.delete(name) else dim(f"{name} was already gone"))
 
     def _replay(self):
         """Print the loaded conversation the way it was printed when it happened.

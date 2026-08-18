@@ -11,7 +11,9 @@ object per line:
 Written the moment each message happens, so a crash loses nothing, and /resume
 parses it straight back (thinking blocks and signatures intact).
 
-Nothing in this file ever deletes a session.
+The only thing here that deletes is delete(), and only ever for an explicit,
+confirmed /delete the user asked for — never an automatic cleanup (prune_empty
+stays a no-op for exactly that reason).
 """
 
 import json
@@ -135,6 +137,18 @@ def unclean():
         if msgs and not clean:
             return p, msgs
     return None
+
+
+def delete(name):
+    """Remove one session's file. The only deletion in this module, and only ever
+    from an explicit, confirmed /delete — never automatic cleanup. Addresses the
+    file the same way load()/rename() do, so it hits exactly the session the list
+    shows. Returns True if a file was removed."""
+    p = _path(name)
+    if p.is_file():
+        p.unlink()
+        return True
+    return False
 
 
 def prune_empty():
